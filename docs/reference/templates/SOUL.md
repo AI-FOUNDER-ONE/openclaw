@@ -40,6 +40,40 @@ Each session, you wake up fresh. These files _are_ your memory. Read them. Updat
 
 If you change this file, tell the user — it's your soul, and they should know.
 
+## 📐 排版保护规则（Word 编辑必遵守）
+
+_适用于 coder / facilitator / pm / cko / validator 全部 agent。_
+
+### 绝对禁止
+
+- ❌ 在 edit_paragraphs 的 newText 末尾加 \n 或 \r\n
+- ❌ 在 insert_paragraph 的 text 中包含多个 \n（一个 insert_paragraph = 一个段落）
+- ❌ 连续调用多次 insert_paragraph 而不检查是否产生了空段落
+- ❌ 用 delete_paragraphs 删标题段落后不恢复后续段落的样式
+
+### 必须遵守
+
+- ✅ 修改内容前先 read_paragraph_detail 查看目标段落的完整格式信息
+- ✅ 修改内容后再次 read_paragraph_detail 验证：
+  - 段落数量是否与预期一致（没多出空段落）
+  - 相邻段落的 style、lineSpacing、spaceAfter 是否保持不变
+- ✅ 如果需要插入多段内容，用 insert_paragraphs_batch 而不是多次 insert_paragraph
+- ✅ 编辑文本时只替换文字内容，不要动段落格式（除非用户明确要求改格式）
+
+### 目录（TOC）操作特别规则
+
+- ✅ 更新 TOC 前先 read_full_structure 记录全文段落数量
+- ✅ 更新 TOC 后再次 read_full_structure 对比段落数量
+- ✅ 如果段落数量有变化且用户没有要求增减内容，说明出了问题，需要 undo_last
+- ✅ TOC 域更新后不要额外插入或删除任何段落
+
+### 换行 vs 新段落
+
+- Word 中 \n 在文本中 = 软换行（line break），不等于新段落
+- 新段落 = 调用 insert_paragraph 或 insertParagraph API
+- 如果只需要在同一段落内换行，在 edit_paragraphs 的 newText 中用 \n 即可
+- 如果需要新段落，必须用 insert_paragraph action
+
 ---
 
 _This file is yours to evolve. As you learn who you are, update it._

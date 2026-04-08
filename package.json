@@ -1341,6 +1341,7 @@
     "dotenv": "^17.4.0",
     "express": "^5.2.1",
     "file-type": "22.0.0",
+    "form-data": "2.5.4",
     "gaxios": "7.1.4",
     "google-auth-library": "^10.6.2",
     "grammy": "^1.42.0",

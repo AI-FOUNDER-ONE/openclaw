@@ -1,0 +1,4454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI-Lab Word Bridge</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #chatMessages::-webkit-scrollbar { width: 4px; }
+    #chatMessages::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+    #chatInput:focus { border-color: #4fc3f7; }
+    #sendBtn:hover { background: #1a5276; }
+    .msg-bubble {
+      padding: 8px 12px;
+      border-radius: 12px;
+      max-width: 90%;
+      word-wrap: break-word;
+      line-height: 1.5;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+    .msg-user {
+      background: #0f3460;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+    .msg-agent {
+      background: #2a2a4a;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+    .msg-system {
+      background: transparent;
+      align-self: center;
+      color: #666;
+      font-size: 11px;
+      text-align: center;
+    }
+    .msg-tool {
+      background: #1a3a2a;
+      align-self: flex-start;
+      border-left: 3px solid #4caf50;
+      font-size: 11px;
+      color: #aaa;
+    }
+    .msg-typing { color: #4fc3f7; }
+    @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+    .cursor-blink { animation: blink 1s infinite; }
+  </style>
+</head>
+<body>
+  <div id="app" style="display:flex; flex-direction:column; height:100vh; background:#1a1a2e; color:#e0e0e0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:13px; overflow:hidden;">
+
+    <div id="statusBar" style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:#16213e; border-bottom:1px solid #2a2a4a; flex-shrink:0;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span id="bridgeStatus" style="width:8px; height:8px; border-radius:50%; background:#ff4444;"></span>
+        <span style="font-size:11px; color:#888;">Word</span>
+        <span style="margin:0 4px; color:#444;">|</span>
+        <span id="chatStatus" style="width:8px; height:8px; border-radius:50%; background:#ff4444;"></span>
+        <span style="font-size:11px; color:#888;">AI</span>
+      </div>
+      <span style="font-size:11px; color:#666;">AI-Lab Word Bridge</span>
+    </div>
+
+    <div id="chatMessages" style="flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px;">
+      <div style="text-align:center; color:#555; font-size:11px; padding:20px 0;">连接中...</div>
+    </div>
+
+    <div id="logSection" style="border-top:1px solid #2a2a4a; flex-shrink:0;">
+      <div id="logToggle" style="display:flex; align-items:center; justify-content:space-between; padding:6px 12px; cursor:pointer; background:#16213e; font-size:11px; color:#888;">
+        <span>📋 操作日志</span>
+        <span id="logArrow">▲</span>
+      </div>
+      <div id="logContent" style="max-height:0; overflow:hidden; transition:max-height 0.3s ease; background:#111;">
+        <div id="logList" style="padding:4px 12px; font-size:10px; font-family:monospace; max-height:120px; overflow-y:auto;"></div>
+      </div>
+    </div>
+
+    <div id="inputArea" class="input-area" style="border-top:1px solid #2a2a4a; padding:8px 12px; background:#16213e; flex-shrink:0;">
+      <div style="display:flex; align-items:flex-end; gap:6px; width:100%;">
+        <textarea id="chatInput" placeholder="输入消息..." rows="2" style="flex:1; background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#e0e0e0; padding:8px 10px; font-size:13px; font-family:inherit; resize:none; outline:none; line-height:1.4;" onkeydown="handleInputKeydown(event)"></textarea>
+        <button id="sendBtn" onclick="sendChatMessage()" style="background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#4fc3f7; padding:0 12px; cursor:pointer; font-size:16px; flex-shrink:0;" title="发送">↵</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const RELAY_URL = 'wss://127.0.0.1:18800/bridge';
+      const RECONNECT_MS = 2000;
+      const MAX_LOG = 50;
+
+      /** @type {{ step: number, action: string, summary: string, timestamp: string }[]} */
+      let operationHistory = [];
+
+      /** @type {WebSocket | null} */
+      let ws = null;
+      let reconnectTimer = null;
+      let intentionalClose = false;
+
+      const bridgeStatusEl = document.getElementById('bridgeStatus');
+
+      function setConnected(connected) {
+        if (bridgeStatusEl) {
+          bridgeStatusEl.style.background = connected ? '#4caf50' : '#ff4444';
+        }
+      }
+
+      function addLog(text) {
+        var logList = document.getElementById('logList');
+        if (logList) {
+          var time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+          var entry = document.createElement('div');
+          entry.style.color = '#888';
+          entry.style.padding = '1px 0';
+          entry.textContent = time + ' ' + text;
+          logList.appendChild(entry);
+          while (logList.children.length > MAX_LOG) {
+            logList.removeChild(logList.firstChild);
+          }
+          logList.scrollTop = logList.scrollHeight;
+        }
+      }
+
+      function appendLog(line) {
+        addLog(line);
+      }
+
+      var chatWs = null;
+      var chatConnected = false;
+      var chatPending = {};
+      var chatSessionKey = 'agent:facilitator:main';
+      var currentStreamRunId = null;
+      var currentStreamText = '';
+      var isStreaming = false;
+      var chatInputIsComposing = false;
+      var chatInputCompositionEndedAt = 0;
+      var AUTH_TOKEN = 'c67d9d2fa104fb16da7484fba08aabd3679d1a9904a627bf';
+
+      function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+          var r = (Math.random() * 16) | 0;
+          return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+        });
+      }
+
+      function buildConnectParams() {
+        return {
+          minProtocol: 3,
+          maxProtocol: 3,
+          client: {
+            id: 'openclaw-control-ui',
+            version: 'word-bridge',
+            platform: typeof navigator !== 'undefined' && navigator.platform ? navigator.platform : 'web',
+            mode: 'webchat',
+          },
+          role: 'operator',
+          scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing'],
+          caps: ['tool-events'],
+          auth: { token: AUTH_TOKEN },
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+          locale: typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'zh-CN',
+        };
+      }
+
+      function updateChatStatus(connected) {
+        var dot = document.getElementById('chatStatus');
+        if (dot) {
+          dot.style.background = connected ? '#4caf50' : '#ff4444';
+        }
+      }
+
+      function connectChat() {
+        try {
+          chatWs = new WebSocket('wss://127.0.0.1:18801/gateway');
+        } catch (e) {
+          updateChatStatus(false);
+          setTimeout(connectChat, 3000);
+          return;
+        }
+
+        chatWs.onopen = function () {};
+
+        chatWs.onmessage = function (evt) {
+          var frame;
+          try {
+            frame = JSON.parse(evt.data);
+          } catch (e) {
+            return;
+          }
+
+          if (frame.type === 'event' && frame.event === 'connect.challenge') {
+            var connectId = generateUUID();
+            chatWs.send(
+              JSON.stringify({
+                type: 'req',
+                id: connectId,
+                method: 'connect',
+                params: buildConnectParams(),
+              })
+            );
+            chatPending[connectId] = {
+              resolve: function (res) {
+                if (res && res.type === 'hello-ok') {
+                  chatConnected = true;
+                  updateChatStatus(true);
+                  loadChatHistory();
+                }
+              },
+              reject: function (err) {
+                console.error('connect failed:', err);
+                updateChatStatus(false);
+              },
+            };
+            return;
+          }
+
+          if (frame.type === 'res') {
+            var pending = chatPending[frame.id];
+            if (pending) {
+              delete chatPending[frame.id];
+              if (frame.ok === false && frame.error) {
+                var em = frame.error.message || String(frame.error.code || 'error');
+                pending.reject(new Error(em));
+              } else {
+                pending.resolve(frame.payload);
+              }
+            }
+            return;
+          }
+
+          if (frame.type === 'event' && frame.event === 'chat') {
+            handleChatEvent(frame.payload);
+            return;
+          }
+        };
+
+        chatWs.onclose = function () {
+          chatConnected = false;
+          updateChatStatus(false);
+          setTimeout(connectChat, 3000);
+        };
+
+        chatWs.onerror = function () {
+          chatConnected = false;
+          updateChatStatus(false);
+        };
+      }
+
+      function chatRequest(method, params) {
+        return new Promise(function (resolve, reject) {
+          if (!chatWs || chatWs.readyState !== WebSocket.OPEN) {
+            reject(new Error('未连接'));
+            return;
+          }
+          var id = generateUUID();
+          var tid = setTimeout(function () {
+            if (chatPending[id]) {
+              delete chatPending[id];
+              reject(new Error('请求超时'));
+            }
+          }, 30000);
+          chatPending[id] = {
+            resolve: function (v) {
+              clearTimeout(tid);
+              delete chatPending[id];
+              resolve(v);
+            },
+            reject: function (e) {
+              clearTimeout(tid);
+              delete chatPending[id];
+              reject(e);
+            },
+          };
+          chatWs.send(JSON.stringify({ type: 'req', id: id, method: method, params: params }));
+        });
+      }
+
+      function loadChatHistory() {
+        chatRequest('chat.history', { sessionKey: chatSessionKey, limit: 50 })
+          .then(function (res) {
+            var container = document.getElementById('chatMessages');
+            container.innerHTML = '';
+            if (res && res.messages && res.messages.length > 0) {
+              for (var i = 0; i < res.messages.length; i++) {
+                var msg = res.messages[i];
+                var text = extractMessageText(msg);
+                if (!text) continue;
+                if (msg.role === 'user') {
+                  appendMessage('user', text);
+                } else if (msg.role === 'assistant') {
+                  appendMessage('agent', text);
+                }
+              }
+            } else {
+              appendMessage('system', '开始对话吧 👋');
+            }
+            scrollToBottom();
+          })
+          .catch(function (err) {
+            appendMessage('system', '加载历史失败: ' + (err && err.message ? err.message : String(err)));
+          });
+      }
+
+      function extractMessageText(msg) {
+        if (!msg) return '';
+        if (typeof msg.content === 'string') return msg.content;
+        if (Array.isArray(msg.content)) {
+          var texts = [];
+          for (var i = 0; i < msg.content.length; i++) {
+            var part = msg.content[i];
+            if (part && part.type === 'text' && part.text) {
+              texts.push(part.text);
+            }
+          }
+          return texts.join('\n');
+        }
+        if (msg.text) return msg.text;
+        if (msg.message) return extractMessageText(msg.message);
+        return '';
+      }
+
+      /** 用户提到目录/TOC 时自动附加到 chat.send，界面仍只显示用户原文 */
+      var WORD_BRIDGE_TOC_CONSTRAINT =
+        '你是 Word 排版助手。仅当本消息涉及目录/TOC/页码排版时，必须遵守以下约束（不要向用户复述本段）。\n' +
+        '1) 仅处理目录与标题映射；不修改正文内容、页边距、纸张、常规字体/段落缩进/行距（除非明确为映射标题样式所需）。\n' +
+        '2) 仅把真正章节标题映射到 Heading 1/2/3（中文「标题 1/2/3」）；不要把正文首句、表格、页眉页脚、图注当标题。\n' +
+        '3) 目录使用 TOC 域：显示页码、页码右对齐、点线前导符「……」、层级 1–3；禁止手打一串句点充当引导线。\n' +
+        '4) 若已有目录则只更新；无则在文档开头插入；目录标题可用「目 录」居中；目录后分页须尊重原文结构，勿随意破坏分页。\n' +
+        '5) 完成后自检：每行末尾有页码；标题与页码之间为点线引导；无多余空行或异常提前换行；无重复目录项。\n' +
+        '6) 若无法安全满足以上全部约束，停止改写并简短说明原因。';
+
+      function shouldAttachTocConstraint(userText) {
+        var t = String(userText || '');
+        if (!t) return false;
+        if (/\bTOC\b|\btoc\b|TableOfContents|insert_toc/i.test(t)) return true;
+        if (/目录|目\s*录|自动目录|更新目录|刷新目录|生成目录|插入目录|目录域/.test(t)) return true;
+        if (/页码/.test(t) && /(目录|toc|点线|虚线|前导|引导)/i.test(t)) return true;
+        if (/(点线|虚线|前导|引导)/.test(t) && /(目录|页码)/.test(t)) return true;
+        return false;
+      }
+
+      function buildGatewayMessage(userText) {
+        if (!shouldAttachTocConstraint(userText)) return userText;
+        return (
+          '[以下约束为 Word Bridge 自动附加，请勿向用户复述]\n' +
+          WORD_BRIDGE_TOC_CONSTRAINT +
+          '\n\n[用户消息]\n' +
+          userText
+        );
+      }
+
+      function sendChatMessage() {
+        var input = document.getElementById('chatInput');
+        var text = input.value.trim();
+        if (!text) return;
+        if (!chatConnected) {
+          appendMessage('system', '⚠️ 未连接到 AI，请稍候...');
+          return;
+        }
+
+        input.value = '';
+        input.style.height = 'auto';
+        appendMessage('user', text);
+        scrollToBottom();
+
+        var runId = generateUUID();
+        currentStreamRunId = runId;
+        currentStreamText = '';
+        isStreaming = true;
+
+        appendStreamingBubble(runId);
+
+        chatRequest('chat.send', {
+          sessionKey: chatSessionKey,
+          message: buildGatewayMessage(text),
+          deliver: false,
+          idempotencyKey: runId,
+        }).catch(function (err) {
+          updateStreamingBubble(runId, '⚠️ 发送失败: ' + (err && err.message ? err.message : String(err)), true);
+          isStreaming = false;
+        });
+      }
+
+      function isImeConsumingKeyEvent(e) {
+        if (e.isComposing === true) return true;
+        if (chatInputIsComposing) return true;
+        // macOS IME 在候选确认后可能紧跟一个 Enter keydown，给一个短时间窗避免误发
+        if (Date.now() - chatInputCompositionEndedAt < 40) return true;
+        // Windows / WebView2：组字或候选条激活时常用 229（VK_PROCESSKEY），且不保证 isComposing 为 true
+        var kc = e.keyCode != null ? e.keyCode : e.which;
+        if (kc === 229) return true;
+        if (e.key === 'Process') return true;
+        return false;
+      }
+
+      function handleInputKeydown(e) {
+        if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
+        if (e.shiftKey) return;
+        if (isImeConsumingKeyEvent(e)) return;
+        e.preventDefault();
+        sendChatMessage();
+      }
+
+      (function initChatInputCompositionGuard() {
+        var chatInput = document.getElementById('chatInput');
+        if (!chatInput) return;
+        chatInput.addEventListener('compositionstart', function () {
+          chatInputIsComposing = true;
+        });
+        chatInput.addEventListener('compositionend', function () {
+          chatInputCompositionEndedAt = Date.now();
+          // 兼容旧浏览器：确保在 keydown 之后再清理 composing 状态
+          setTimeout(function () {
+            chatInputIsComposing = false;
+          }, 0);
+        });
+      })();
+
+      function handleChatEvent(payload) {
+        if (!payload) return;
+        if (payload.sessionKey && payload.sessionKey !== chatSessionKey) return;
+
+        var runId = payload.runId || currentStreamRunId;
+
+        if (payload.state === 'delta') {
+          var text = '';
+          if (payload.message && payload.message.content) {
+            text = extractMessageText(payload.message);
+          }
+          if (text) {
+            currentStreamText = text;
+            updateStreamingBubble(runId, text, false);
+            scrollToBottom();
+          }
+        } else if (payload.state === 'final') {
+          var finalText = '';
+          if (payload.message) {
+            finalText = extractMessageText(payload.message);
+          }
+          var finalMessageText = finalText || currentStreamText;
+          if (finalText) {
+            updateStreamingBubble(runId, finalText, true);
+          } else if (currentStreamText) {
+            updateStreamingBubble(runId, currentStreamText, true);
+          }
+          isStreaming = false;
+          currentStreamRunId = null;
+          currentStreamText = '';
+          scrollToBottom();
+        } else if (payload.state === 'error') {
+          var errMsg = payload.errorMessage || '回复出错';
+          updateStreamingBubble(runId, '⚠️ ' + errMsg, true);
+          isStreaming = false;
+          currentStreamRunId = null;
+          scrollToBottom();
+        } else if (payload.state === 'aborted') {
+          updateStreamingBubble(runId, currentStreamText + '\n\n[已中断]', true);
+          isStreaming = false;
+          currentStreamRunId = null;
+          scrollToBottom();
+        }
+      }
+
+      function appendMessage(role, text) {
+        var container = document.getElementById('chatMessages');
+        var div = document.createElement('div');
+        div.className = 'msg-bubble msg-' + role;
+        div.textContent = text;
+        container.appendChild(div);
+      }
+
+      function appendStreamingBubble(runId) {
+        var container = document.getElementById('chatMessages');
+        var div = document.createElement('div');
+        div.className = 'msg-bubble msg-agent msg-typing';
+        div.id = 'stream-' + runId;
+        div.innerHTML = '<span class="cursor-blink">●</span>';
+        container.appendChild(div);
+        scrollToBottom();
+      }
+
+      function updateStreamingBubble(runId, text, isFinal) {
+        var bubble = document.getElementById('stream-' + runId);
+        if (!bubble) {
+          appendStreamingBubble(runId);
+          bubble = document.getElementById('stream-' + runId);
+        }
+        if (isFinal) {
+          bubble.className = 'msg-bubble msg-agent';
+          bubble.textContent = text;
+        } else {
+          bubble.innerHTML = text + '<span class="cursor-blink">●</span>';
+        }
+      }
+
+      function scrollToBottom() {
+        var container = document.getElementById('chatMessages');
+        container.scrollTop = container.scrollHeight;
+      }
+
+      var logExpanded = false;
+      var logToggleEl = document.getElementById('logToggle');
+      if (logToggleEl) {
+        logToggleEl.onclick = function () {
+          logExpanded = !logExpanded;
+          var content = document.getElementById('logContent');
+          var arrow = document.getElementById('logArrow');
+          if (logExpanded) {
+            content.style.maxHeight = '120px';
+            arrow.textContent = '▼';
+          } else {
+            content.style.maxHeight = '0';
+            arrow.textContent = '▲';
+          }
+        };
+      }
+
+      window.sendChatMessage = sendChatMessage;
+      window.handleInputKeydown = handleInputKeydown;
+
+      function connect() {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        try {
+          ws = new WebSocket(RELAY_URL);
+        } catch (e) {
+          appendLog('WebSocket 创建失败: ' + e.message);
+          scheduleReconnect();
+          return;
+        }
+
+        ws.onopen = function () {
+          setConnected(true);
+          appendLog('已连接到 Relay: ' + RELAY_URL);
+        };
+
+        ws.onclose = function () {
+          setConnected(false);
+          appendLog('连接已断开');
+          ws = null;
+          if (!intentionalClose) {
+            scheduleReconnect();
+          }
+        };
+
+        ws.onerror = function () {
+          appendLog('WebSocket 错误');
+        };
+
+        ws.onmessage = function (ev) {
+          let msg;
+          try {
+            msg = JSON.parse(ev.data);
+          } catch (e) {
+            appendLog('收到非 JSON 消息');
+            return;
+          }
+          if (msg.type === 'word_edit_command' && msg.requestId) {
+            handleWordEditCommand(msg);
+          }
+        };
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = null;
+          appendLog('尝试重连…');
+          connect();
+        }, RECONNECT_MS);
+      }
+
+      function buildSummary(data) {
+        var act = data.action;
+        switch (act) {
+          case 'edit_paragraphs': {
+            var edits = (data.edits || []).map(function (e) {
+              return (
+                '"' +
+                String(e.searchText || '').substring(0, 15) +
+                '..." → "' +
+                String(e.replaceText || '').substring(0, 15) +
+                '..."'
+              );
+            });
+            return '文字替换: ' + edits.join(', ');
+          }
+          case 'apply_format': {
+            var ops = [];
+            var op = data.operation;
+            if (op && op.font) {
+              var f = op.font;
+              if (f.bold !== undefined) ops.push(f.bold ? '加粗' : '取消加粗');
+              if (f.name) ops.push('字体→' + f.name);
+              if (f.size) ops.push('字号→' + f.size);
+              if (f.color) ops.push('颜色→' + f.color);
+              if (f.highlightColor !== undefined) {
+                ops.push(f.highlightColor ? '高亮→' + f.highlightColor : '清除高亮');
+              }
+              if (f.italic !== undefined) ops.push(f.italic ? '斜体' : '取消斜体');
+            }
+            if (op && op.format) {
+              var fmt = op.format;
+              if (fmt.alignment) ops.push('对齐→' + fmt.alignment);
+              if (fmt.lineSpacing !== undefined && fmt.lineSpacing !== null) {
+                var lsNote = fmt.lineSpacingRule ? '(' + fmt.lineSpacingRule + ')' : '';
+                ops.push('行距→' + fmt.lineSpacing + lsNote);
+              }
+            }
+            if (op && op.style) ops.push('样式→' + op.style);
+            var t = data.target;
+            var targetDesc =
+              t && t.type === 'all'
+                ? '全文'
+                : t && t.type === 'paragraph'
+                  ? '第' + t.index + '段'
+                  : t && t.type === 'range'
+                    ? '第' + t.start + '-' + t.end + '段'
+                    : t && t.type === 'search'
+                      ? '匹配"' + String(t.text || '').substring(0, 10) + '"'
+                      : '';
+            return targetDesc + ': ' + (ops.join(', ') || String(act));
+          }
+          case 'clear_highlights': {
+            var cok = data.clearedParagraphs != null ? data.clearedParagraphs : 0;
+            var ctot = data.bodyParagraphCount != null ? data.bodyParagraphCount : cok;
+            return '清除高亮 ' + cok + '/' + ctot + ' 段';
+          }
+          case 'set_font':
+            return '第' + data.paragraphIndex + '段 字体设置';
+          case 'set_paragraph_format':
+            return '第' + data.paragraphIndex + '段 段落格式';
+          case 'apply_style':
+            return '第' + data.paragraphIndex + '段 应用样式 ' + (data.styleName || '');
+          case 'edit_table_cell':
+            return (
+              '表格[' +
+              data.tableIndex +
+              '] 单元格(' +
+              data.rowIndex +
+              ',' +
+              data.colIndex +
+              ')'
+            );
+          case 'insert_table':
+            return (
+              '插入表格 ' +
+              (data.tableData && data.tableData.rows ? data.tableData.rows : 0) +
+              '×' +
+              (data.tableData && data.tableData.cols ? data.tableData.cols : 0)
+            );
+          case 'insert_paragraph':
+            return '插入段落: "' + String(data.text || '').substring(0, 20) + '..."';
+          case 'insert_paragraphs_batch':
+            return (
+              '批量插入: ' +
+              (data.items && data.items.length ? data.items.length + ' 处' : '0') +
+              ' 参考点'
+            );
+          case 'insert_page_break':
+            return '插入分页符';
+          case 'insert_comment':
+            return '插入批注';
+          case 'read_selection':
+            return '读取当前选区';
+          case 'replace_selection':
+            return '替换选区: "' + String(data.text || '').substring(0, 20) + '..."';
+          case 'format_selection':
+            return '选区格式: ' + (data.styleName || '') + (data.font ? '+字体' : '') + (data.format ? '+段落' : '');
+          case 'read_paragraph_detail': {
+            var ri = data.indices && data.indices.length ? data.indices.length : '默认≤50段';
+            return '读取段落全文: ' + ri;
+          }
+          case 'delete_paragraphs': {
+            var n = data.indices && data.indices.length ? data.indices.length : 0;
+            return '删除 ' + n + ' 个段落';
+          }
+          case 'delete_text': {
+            var st = String(data.searchText || '').substring(0, 30);
+            var rt = data.replaceText;
+            if (rt == null || rt === '') {
+              return '删除文本: "' + st + '"';
+            }
+            return (
+              '替换: "' +
+              st +
+              '" → "' +
+              String(rt).substring(0, 30) +
+              '"'
+            );
+          }
+          case 'delete_range': {
+            var sIdx = data.startIndex != null ? data.startIndex : '?';
+            var eIdx = data.endIndex != null ? data.endIndex : '?';
+            var span =
+              sIdx !== '?' && eIdx !== '?'
+                ? Math.abs(Number(eIdx) - Number(sIdx)) + 1
+                : '?';
+            return '删除段落 [' + sIdx + ']-[' + eIdx + ']（共 ' + span + ' 段）';
+          }
+          case 'read_hyperlinks':
+            return '读取超链接';
+          case 'remove_hyperlinks': {
+            var ht = data.hyperlinkTarget || 'all';
+            return '清除超链接: ' + ht;
+          }
+          case 'add_table_row': {
+            var ti = data.tableIndex != null ? data.tableIndex : 0;
+            var rc = data.rowCount != null ? data.rowCount : 1;
+            var vr = data.values && data.values.length ? data.values.length : rc;
+            return '表格 ' + ti + ' 添加 ' + vr + ' 行';
+          }
+          case 'insert_toc':
+            return '插入目录';
+          case 'set_header_footer':
+            return '设置页眉页脚';
+          case 'insert_image':
+            return '插入图片';
+          case 'set_page_setup':
+            return '设置页面';
+          case 'track_changes': {
+            var tm = data.mode || 'toggle';
+            return '修订模式: ' + tm;
+          }
+          case 'set_properties':
+            return '设置文档属性';
+          case 'content_control': {
+            var ca = data.ccAction || 'insert';
+            return '内容控件: ' + ca;
+          }
+          default:
+            return String(act || '');
+        }
+      }
+
+      function isMutatingWordAction(act) {
+        return (
+          act === 'edit_paragraphs' ||
+          act === 'set_font' ||
+          act === 'set_paragraph_format' ||
+          act === 'apply_style' ||
+          act === 'apply_format' ||
+          act === 'clear_highlights' ||
+          act === 'edit_table_cell' ||
+          act === 'insert_table' ||
+          act === 'insert_paragraph' ||
+          act === 'insert_paragraphs_batch' ||
+          act === 'insert_page_break' ||
+          act === 'insert_comment' ||
+          act === 'delete_paragraphs' ||
+          act === 'delete_text' ||
+          act === 'delete_range' ||
+          act === 'remove_hyperlinks' ||
+          act === 'add_table_row' ||
+          act === 'insert_toc' ||
+          act === 'set_header_footer' ||
+          act === 'insert_image' ||
+          act === 'set_page_setup' ||
+          act === 'track_changes' ||
+          act === 'set_properties' ||
+          act === 'content_control' ||
+          act === 'replace_selection' ||
+          act === 'format_selection'
+        );
+      }
+
+      function mapAlignment(a) {
+        if (!a) return Word.Alignment.left;
+        var map = {
+          Left: Word.Alignment.left,
+          Center: Word.Alignment.centered,
+          Right: Word.Alignment.right,
+          Justified: Word.Alignment.justified,
+        };
+        return map[a] != null ? map[a] : Word.Alignment.left;
+      }
+
+      function insertLocationFromPosition(pos) {
+        if (pos === 'Before') return Word.InsertLocation.before;
+        return Word.InsertLocation.after;
+      }
+
+      function mapLineSpacingRule(ruleStr) {
+        if (ruleStr == null || ruleStr === '') {
+          return Word.LineSpacingRule ? Word.LineSpacingRule.multiple : 'Multiple';
+        }
+        var R = Word.LineSpacingRule;
+        if (!R) {
+          return String(ruleStr);
+        }
+        var s = String(ruleStr).replace(/\s/g, '');
+        if (s === 'Multiple') return R.multiple;
+        if (s === 'Exactly') return R.exactly;
+        if (s === 'AtLeast') return R.atLeast;
+        if (s === 'Auto') return R.auto;
+        var sl = s.toLowerCase();
+        if (sl === 'multiple') return R.multiple;
+        if (sl === 'exactly') return R.exactly;
+        if (sl === 'atleast') return R.atLeast;
+        if (sl === 'auto') return R.auto;
+        return R.multiple;
+      }
+
+      /**
+       * Word.js：lineSpacing 的含义依赖 lineSpacingRule。
+       * 仅设 lineSpacing=2 而不设 Multiple 时，常被当成固定磅值或无效，界面不会出现「2 倍行距」。
+       * 未显式传 lineSpacingRule 时：0.5–5 按倍数（Multiple），更大数值按固定磅（Exactly）。
+       */
+      function inferLineSpacingRuleEnum(lineSpacing, explicitRule) {
+        if (explicitRule != null && explicitRule !== '') {
+          return mapLineSpacingRule(explicitRule);
+        }
+        var n = Number(lineSpacing);
+        if (n >= 0.5 && n <= 5) {
+          return mapLineSpacingRule('Multiple');
+        }
+        return mapLineSpacingRule('Exactly');
+      }
+
+      function isLineSpacingRuleMultiple(ruleEnum) {
+        if (ruleEnum == null) return false;
+        var R = Word.LineSpacingRule;
+        if (R && ruleEnum === R.multiple) return true;
+        var s = String(ruleEnum).toLowerCase();
+        return s.indexOf('multiple') >= 0;
+      }
+
+      /**
+       * Word 对象模型（含 Word.js）：lineSpacingRule=Multiple 时，lineSpacing 存「倍数×12」
+       *（单倍≈12、1.5 倍=18、双倍=24）。若把 1.5 直接写入会得到界面约 0.13 倍（1.5/12）。
+       * 用户传 UI 倍数（0.5–5.5）时乘 12；已传 OM 值（如 18、24）则原样写入。
+       */
+      function wordLineSpacingToApiValue(ruleEnum, userLineSpacing) {
+        var n = Number(userLineSpacing);
+        if (isNaN(n)) return userLineSpacing;
+        if (!isLineSpacingRuleMultiple(ruleEnum)) {
+          return n;
+        }
+        if (n > 0 && n <= 5.5) {
+          return n * 12;
+        }
+        return n;
+      }
+
+      /** 读回：Multiple 时把 OM 值还原为约「几倍行距」供展示 */
+      function wordLineSpacingMultipleToUi(multipleRaw) {
+        var n = Number(multipleRaw);
+        if (isNaN(n) || n <= 0) return multipleRaw;
+        var m = n / 12;
+        return Math.round(m * 100) / 100;
+      }
+
+      /** 遗留：主流程已改用 applyParagraphFormatDirect；保留以免外部脚本引用 */
+      function applyLineSpacingToParagraphFormat(pf, fmt) {
+        if (!pf || fmt.lineSpacing === undefined) return;
+        try {
+          var re = inferLineSpacingRuleEnum(fmt.lineSpacing, fmt.lineSpacingRule);
+          pf.lineSpacingRule = re;
+          pf.lineSpacing = wordLineSpacingToApiValue(re, fmt.lineSpacing);
+        } catch (e) {}
+      }
+
+      /** 遗留：与 applyParagraphFormatDirect 中行距逻辑一致 */
+      function tryApplyLineSpacingOnParagraphBody(p, fmt) {
+        if (!p || fmt.lineSpacing === undefined) return;
+        var rule = inferLineSpacingRuleEnum(fmt.lineSpacing, fmt.lineSpacingRule);
+        try {
+          p.lineSpacingRule = rule;
+        } catch (e1) {}
+        try {
+          p.lineSpacing = wordLineSpacingToApiValue(rule, fmt.lineSpacing);
+        } catch (e2) {}
+      }
+
+      /**
+       * 首行缩进：优先写 Paragraph.firstLineIndent（WordApi 1.1）。
+       * 仅写 paragraphFormat.firstLineIndent 在清单为 1.1 的宿主上常属 WordApi 1.5，易表现为 sync 成功但界面不变。
+       */
+      function applyFirstLineIndent(item, pts) {
+        if (pts === undefined) return;
+        try {
+          item.firstLineIndent = pts;
+        } catch (e1) {}
+      }
+
+      /**
+       * 段落格式写在 Word.Paragraph 根属性。多倍行距须用 wordLineSpacingToApiValue（倍数×12）。
+       */
+      function applyParagraphFormatDirect(paragraphObj, fmt, onAlignmentFail) {
+        if (!fmt || !paragraphObj) return;
+        if (fmt.lineSpacing !== undefined && fmt.lineSpacing !== null) {
+          var ruleEnum = inferLineSpacingRuleEnum(fmt.lineSpacing, fmt.lineSpacingRule);
+          var apiLs = wordLineSpacingToApiValue(ruleEnum, fmt.lineSpacing);
+          try {
+            paragraphObj.lineSpacingRule = ruleEnum;
+          } catch (e0) {}
+          try {
+            paragraphObj.lineSpacing = apiLs;
+          } catch (e1) {}
+        }
+        if (fmt.spaceBefore !== undefined && fmt.spaceBefore !== null) {
+          try {
+            paragraphObj.spaceBefore = fmt.spaceBefore;
+          } catch (eS1) {}
+        }
+        if (fmt.spaceAfter !== undefined && fmt.spaceAfter !== null) {
+          try {
+            paragraphObj.spaceAfter = fmt.spaceAfter;
+          } catch (eS2) {}
+        }
+        if (fmt.alignment != null && fmt.alignment !== '') {
+          if (!applyAlignmentToItem(paragraphObj, fmt.alignment)) {
+            if (typeof onAlignmentFail === 'function') onAlignmentFail();
+          }
+        }
+        if (fmt.firstLineIndent !== undefined && fmt.firstLineIndent !== null) {
+          try {
+            paragraphObj.firstLineIndent = fmt.firstLineIndent;
+          } catch (eF) {}
+        }
+        if (fmt.leftIndent !== undefined && fmt.leftIndent !== null) {
+          try {
+            paragraphObj.leftIndent = fmt.leftIndent;
+          } catch (eL) {}
+        }
+        if (fmt.rightIndent !== undefined && fmt.rightIndent !== null) {
+          try {
+            paragraphObj.rightIndent = fmt.rightIndent;
+          } catch (eR) {}
+        }
+      }
+
+      /** 从 changelog 中提取 ⚠️ 行，便于 Agent 统一读 data.warnings */
+      function extractWarningsFromChangelog(changelog) {
+        if (!changelog || !changelog.length) return [];
+        var w = [];
+        var i;
+        for (i = 0; i < changelog.length; i++) {
+          if (String(changelog[i]).indexOf('⚠️') >= 0) {
+            w.push(changelog[i]);
+          }
+        }
+        return w;
+      }
+
+      async function safeReplaceText(paragraph, newText, context) {
+        var cleanText = String(newText == null ? '' : newText).replace(/[\r\n]+$/, '');
+        var range = paragraph.getRange(Word.RangeLocation.content);
+        range.load('text');
+        await context.sync();
+        range.insertText(cleanText, Word.InsertLocation.replace);
+        await context.sync();
+      }
+
+      async function safeInsertParagraph(refParagraph, text, location, context) {
+        var cleanText = String(text == null ? '' : text).replace(/^\n+|\n+$/g, '');
+        var newPara = refParagraph.insertParagraph(cleanText, location);
+        newPara.load('text,isListItem,style');
+        await context.sync();
+
+        var adjacentPara =
+          location === Word.InsertLocation.after
+            ? newPara.getNextOrNullObject()
+            : newPara.getPreviousOrNullObject();
+        adjacentPara.load('text,isLastParagraph');
+        await context.sync();
+
+        if (!adjacentPara.isNullObject) {
+          var adjText = (adjacentPara.text || '').trim();
+          if (adjText === '' && !adjacentPara.isLastParagraph) {
+            adjacentPara.delete();
+            await context.sync();
+          }
+        }
+
+        return newPara;
+      }
+
+      async function captureFormatSnapshot(body, context, startIndex, endIndex) {
+        var paragraphs = body.paragraphs;
+        paragraphs.load('items');
+        await context.sync();
+
+        var snapshots = [];
+        var upper = Math.min(endIndex, paragraphs.items.length - 1);
+        var i;
+        for (i = startIndex; i <= upper; i++) {
+          var p = paragraphs.items[i];
+          p.load(
+            'style,alignment,lineSpacing,lineSpacingRule,spaceAfter,spaceBefore,firstLineIndent,leftIndent,rightIndent,outlineLevel'
+          );
+        }
+        await context.sync();
+
+        for (i = startIndex; i <= upper; i++) {
+          var p0 = paragraphs.items[i];
+          snapshots.push({
+            index: i,
+            style: p0.style || '',
+            alignment: p0.alignment || '',
+            lineSpacing: p0.lineSpacing,
+            lineSpacingRule: p0.lineSpacingRule || '',
+            spaceAfter: p0.spaceAfter,
+            spaceBefore: p0.spaceBefore,
+            firstLineIndent: p0.firstLineIndent,
+            leftIndent: p0.leftIndent,
+            rightIndent: p0.rightIndent,
+            outlineLevel: p0.outlineLevel || '',
+          });
+        }
+        return snapshots;
+      }
+
+      async function restoreFormatSnapshot(body, context, snapshots) {
+        var paragraphs = body.paragraphs;
+        paragraphs.load('items');
+        await context.sync();
+
+        var si;
+        for (si = 0; si < snapshots.length; si++) {
+          var snap = snapshots[si];
+          if (snap.index >= paragraphs.items.length) continue;
+          var p = paragraphs.items[snap.index];
+          try {
+            p.style = snap.style;
+            p.alignment = snap.alignment;
+            p.lineSpacing = snap.lineSpacing;
+            p.lineSpacingRule = snap.lineSpacingRule;
+            p.spaceAfter = snap.spaceAfter;
+            p.spaceBefore = snap.spaceBefore;
+            p.firstLineIndent = snap.firstLineIndent;
+            p.leftIndent = snap.leftIndent;
+            p.rightIndent = snap.rightIndent;
+            p.outlineLevel = snap.outlineLevel;
+          } catch (e) {}
+        }
+        await context.sync();
+      }
+
+      /** 对齐：优先 Paragraph.alignment（1.1），失败再用 paragraphFormat */
+      function applyAlignmentToItem(item, alignStr) {
+        if (!alignStr) return false;
+        var val = mapAlignment(alignStr);
+        try {
+          item.alignment = val;
+          return true;
+        } catch (e1) {}
+        try {
+          if (item.paragraphFormat) {
+            item.paragraphFormat.alignment = val;
+            return true;
+          }
+        } catch (e2) {}
+        return false;
+      }
+
+      function setFontUnderline(item, on) {
+        try {
+          if (typeof Word !== 'undefined' && Word.UnderlineType) {
+            item.font.underline = on ? Word.UnderlineType.single : Word.UnderlineType.none;
+          } else {
+            item.font.underline = on ? 'Single' : 'None';
+          }
+        } catch (ue) {
+          try {
+            item.font.underline = on ? 'Single' : 'None';
+          } catch (ue2) {}
+        }
+      }
+
+      function runApplyFormat(data) {
+        return Word.run(async function (context) {
+          try {
+            var target = data.target;
+            var operation = data.operation;
+            if (!target || !operation) {
+              return { success: false, action: 'apply_format', error: '缺少 target 或 operation 参数' };
+            }
+
+            var targetItems = [];
+
+            if (target.type === 'all') {
+              var paragraphsAll = context.document.body.paragraphs;
+              paragraphsAll.load('items');
+              await context.sync();
+              for (var ai = 0; ai < paragraphsAll.items.length; ai++) {
+                targetItems.push(paragraphsAll.items[ai]);
+              }
+            } else if (target.type === 'paragraph') {
+              if (target.index === undefined || target.index === null) {
+                return { success: false, action: 'apply_format', error: '缺少 index 参数' };
+              }
+              var paragraphsP = context.document.body.paragraphs;
+              paragraphsP.load('items');
+              await context.sync();
+              if (target.index < 0 || target.index >= paragraphsP.items.length) {
+                return {
+                  success: false,
+                  action: 'apply_format',
+                  error:
+                    '段落索引 ' +
+                    target.index +
+                    ' 超出范围（共 ' +
+                    paragraphsP.items.length +
+                    ' 段）',
+                };
+              }
+              targetItems.push(paragraphsP.items[target.index]);
+            } else if (target.type === 'range') {
+              if (target.start === undefined || target.end === undefined) {
+                return { success: false, action: 'apply_format', error: '缺少 start 或 end 参数' };
+              }
+              var paragraphsR = context.document.body.paragraphs;
+              paragraphsR.load('items');
+              await context.sync();
+              var s = Math.max(0, target.start);
+              var e = Math.min(paragraphsR.items.length - 1, target.end);
+              if (paragraphsR.items.length === 0 || s > e) {
+                return {
+                  success: false,
+                  action: 'apply_format',
+                  error: '段落区间无效（start/end 或文档为空）',
+                };
+              }
+              for (var ri = s; ri <= e; ri++) {
+                targetItems.push(paragraphsR.items[ri]);
+              }
+            } else if (target.type === 'search') {
+              if (!target.text) {
+                return { success: false, action: 'apply_format', error: '缺少 text 参数' };
+              }
+              var searchResults = context.document.body.search(String(target.text), {
+                matchCase: true,
+                matchWholeWord: false,
+              });
+              searchResults.load('items');
+              await context.sync();
+              if (searchResults.items.length === 0) {
+                return {
+                  success: false,
+                  action: 'apply_format',
+                  error: '未找到匹配文本: "' + String(target.text).substring(0, 30) + '"',
+                };
+              }
+              for (var si = 0; si < searchResults.items.length; si++) {
+                targetItems.push(searchResults.items[si]);
+              }
+            } else if (target.type === 'selection') {
+              var selRange = context.document.getSelection();
+              selRange.load('isEmpty');
+              await context.sync();
+              if (selRange.isEmpty) {
+                return {
+                  success: false,
+                  action: 'apply_format',
+                  error: '当前没有选中任何内容',
+                };
+              }
+              targetItems.push(selRange);
+            } else {
+              return {
+                success: false,
+                action: 'apply_format',
+                error: '未知的 target.type: ' + String(target.type),
+              };
+            }
+
+            var appliedCount = 0;
+            var opKeys = [];
+            if (operation.font) opKeys.push('font');
+            if (operation.format) opKeys.push('format');
+            if (operation.style != null && operation.style !== '') opKeys.push('style');
+
+            var styleFailCount = 0;
+            var highlightFailCount = 0;
+            var alignmentFailCount = 0;
+
+            // target 为 search 时 item 为 Range：须先 load paragraphs 再 sync，才能逐段写格式
+            if (operation.format) {
+              var prei;
+              for (prei = 0; prei < targetItems.length; prei++) {
+                var tpre = targetItems[prei];
+                if (tpre.paragraphs && typeof tpre.paragraphs.load === 'function') {
+                  tpre.paragraphs.load('items');
+                }
+              }
+              await context.sync();
+            }
+
+            /**
+             * 顺序：先 style → 再在「真实 Paragraph」上写 format（Range 则展开为 paragraphs.items）
+             * → 最后 font。后套 style 会冲掉行距，故 style 必须在行距之前。
+             */
+            for (var k = 0; k < targetItems.length; k++) {
+              var item = targetItems[k];
+
+              if (operation.style != null && operation.style !== '') {
+                try {
+                  if (typeof item.style !== 'undefined') {
+                    item.style = operation.style;
+                  }
+                } catch (st) {
+                  styleFailCount++;
+                }
+              }
+
+              if (operation.format) {
+                var fmt = operation.format;
+                var plist = [];
+                var eit = item;
+                if (eit.paragraphs && eit.paragraphs.items && eit.paragraphs.items.length > 0) {
+                  var epi;
+                  for (epi = 0; epi < eit.paragraphs.items.length; epi++) {
+                    plist.push(eit.paragraphs.items[epi]);
+                  }
+                } else {
+                  plist.push(eit);
+                }
+                for (var epi2 = 0; epi2 < plist.length; epi2++) {
+                  applyParagraphFormatDirect(plist[epi2], fmt, function () {
+                    alignmentFailCount++;
+                  });
+                }
+              }
+
+              if (operation.font) {
+                var f = operation.font;
+                if (f.name !== undefined) item.font.name = f.name;
+                if (f.size !== undefined) item.font.size = f.size;
+                if (f.bold !== undefined) item.font.bold = f.bold;
+                if (f.italic !== undefined) item.font.italic = f.italic;
+                if (f.color !== undefined) item.font.color = f.color;
+                if (f.highlightColor !== undefined) {
+                  try {
+                    item.font.highlightColor = f.highlightColor;
+                  } catch (hc) {
+                    highlightFailCount++;
+                  }
+                }
+                if (f.underline !== undefined) setFontUnderline(item, f.underline);
+                if (f.strikethrough !== undefined) item.font.strikethrough = f.strikethrough;
+              }
+
+              appliedCount++;
+            }
+            await context.sync();
+
+            var warnings = [];
+            if (styleFailCount > 0) {
+              warnings.push(
+                '部分段落样式未应用（共 ' +
+                  styleFailCount +
+                  ' 处）：样式名可能无效、或为标题等受保护段落'
+              );
+            }
+            if (highlightFailCount > 0) {
+              warnings.push(
+                '部分高亮未设置（共 ' + highlightFailCount + ' 处）：宿主可能不支持该颜色或区域只读'
+              );
+            }
+            if (alignmentFailCount > 0) {
+              warnings.push('部分对齐未应用（共 ' + alignmentFailCount + ' 处）');
+            }
+
+            var dataOut = {
+              targetType: target.type,
+              appliedCount: appliedCount,
+              operation: opKeys,
+            };
+            if (warnings.length > 0) {
+              dataOut.warnings = warnings;
+            }
+
+            return {
+              success: true,
+              action: 'apply_format',
+              data: dataOut,
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'apply_format',
+              error: '格式操作失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runClearHighlights() {
+        return Word.run(async function (context) {
+          try {
+            var paragraphs = context.document.body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            var totalParas = paragraphs.items.length;
+            var clearedOk = 0;
+            for (var ci = 0; ci < totalParas; ci++) {
+              try {
+                paragraphs.items[ci].font.highlightColor = null;
+                clearedOk++;
+              } catch (hl) {}
+            }
+            await context.sync();
+            var dataClr = {
+              clearedParagraphs: clearedOk,
+              bodyParagraphCount: totalParas,
+            };
+            if (clearedOk < totalParas) {
+              dataClr.warnings = [
+                '仅 ' +
+                  clearedOk +
+                  '/' +
+                  totalParas +
+                  ' 段成功清除高亮；其余段可能受样式/表格单元格/保护限制',
+              ];
+            }
+            return {
+              success: true,
+              action: 'clear_highlights',
+              data: dataClr,
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'clear_highlights',
+              error: '清除高亮失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      async function handleWordEditCommand(msg) {
+        const requestId = msg.requestId;
+        const data = msg.data || {};
+        const action = data.action;
+        appendLog('收到指令: ' + action);
+
+        let result;
+        try {
+          switch (action) {
+            case 'read_structure':
+              result = await runReadStructure();
+              break;
+            case 'read_full_structure':
+              result = await runReadFullStructure();
+              break;
+            case 'read_page_setup':
+              result = await runReadPageSetup();
+              break;
+            case 'read_headers_footers':
+              result = await runReadHeadersFooters();
+              break;
+            case 'read_images':
+              result = await runReadImages();
+              break;
+            case 'read_document_properties':
+              result = await runReadDocumentProperties();
+              break;
+            case 'read_tracked_changes':
+              result = await runReadTrackedChanges();
+              break;
+            case 'read_selection': {
+              result = await Word.run(async function (context) {
+                try {
+                  var selection = context.document.getSelection();
+                  selection.load('text,isEmpty');
+                  try {
+                    selection.load('style');
+                  } catch (eSt) {}
+                  selection.font.load('name, size, bold, italic, color');
+                  try {
+                    selection.font.load('underline');
+                  } catch (eUn) {}
+                  var paragraphs = selection.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  if (selection.isEmpty) {
+                    return {
+                      success: false,
+                      action: 'read_selection',
+                      error: '当前没有选中任何内容。请在 Word 中先选中一段文字，再发送指令。',
+                    };
+                  }
+
+                  var paraTexts = [];
+                  var pi;
+                  for (pi = 0; pi < paragraphs.items.length; pi++) {
+                    paragraphs.items[pi].load(
+                      'text, style, alignment, firstLineIndent, lineSpacing, lineSpacingRule'
+                    );
+                  }
+                  await context.sync();
+
+                  for (pi = 0; pi < paragraphs.items.length; pi++) {
+                    var pr = paragraphs.items[pi];
+                    var lrStr = '';
+                    try {
+                      lrStr =
+                        pr.lineSpacingRule != null ? String(pr.lineSpacingRule) : '';
+                    } catch (eLr) {}
+                    paraTexts.push({
+                      index: pi,
+                      text: pr.text,
+                      style: pr.style || '',
+                      alignment: pr.alignment,
+                      firstLineIndent: pr.firstLineIndent,
+                      lineSpacing: pr.lineSpacing,
+                      lineSpacingRule: lrStr || null,
+                    });
+                  }
+
+                  var selStyle = '';
+                  try {
+                    selStyle = selection.style || '';
+                  } catch (eSy) {}
+
+                  return {
+                    success: true,
+                    action: 'read_selection',
+                    data: {
+                      text: selection.text,
+                      length: selection.text.length,
+                      paragraphCount: paragraphs.items.length,
+                      paragraphs: paraTexts,
+                      font: {
+                        name: selection.font.name,
+                        size: selection.font.size,
+                        bold: selection.font.bold,
+                        italic: selection.font.italic,
+                        color: selection.font.color,
+                        underline: selection.font.underline,
+                      },
+                      style: selStyle,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'read_selection',
+                    error: '读取选区失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'replace_selection': {
+              result = await Word.run(async function (context) {
+                try {
+                  var selection = context.document.getSelection();
+                  selection.load('text,isEmpty');
+                  await context.sync();
+
+                  if (selection.isEmpty) {
+                    return {
+                      success: false,
+                      action: 'replace_selection',
+                      error: '当前没有选中任何内容。',
+                    };
+                  }
+
+                  var originalText = selection.text;
+                  var newText = data.text;
+                  if (newText === undefined || newText === null) {
+                    return {
+                      success: false,
+                      action: 'replace_selection',
+                      error: '缺少 text 参数（要替换成的新内容）',
+                    };
+                  }
+
+                  selection.insertText(String(newText), Word.InsertLocation.replace);
+                  await context.sync();
+
+                  if (data.font) {
+                    var sel2 = context.document.getSelection();
+                    var f2 = data.font;
+                    if (f2.name !== undefined) sel2.font.name = f2.name;
+                    if (f2.size !== undefined) sel2.font.size = f2.size;
+                    if (f2.bold !== undefined && f2.bold !== null) sel2.font.bold = f2.bold;
+                    if (f2.italic !== undefined && f2.italic !== null) sel2.font.italic = f2.italic;
+                    if (f2.color !== undefined) sel2.font.color = f2.color;
+                    if (f2.highlightColor !== undefined) {
+                      try {
+                        sel2.font.highlightColor = f2.highlightColor;
+                      } catch (hc) {}
+                    }
+                    if (f2.underline !== undefined) setFontUnderline(sel2, !!f2.underline);
+                    if (f2.strikethrough !== undefined) sel2.font.strikethrough = f2.strikethrough;
+                    await context.sync();
+                  }
+
+                  return {
+                    success: true,
+                    action: 'replace_selection',
+                    data: {
+                      originalLength: originalText.length,
+                      newLength: String(newText).length,
+                      originalPreview: originalText.substring(0, 50),
+                      newPreview: String(newText).substring(0, 50),
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'replace_selection',
+                    error: '替换选区失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'format_selection': {
+              result = await Word.run(async function (context) {
+                try {
+                  var selection = context.document.getSelection();
+                  selection.load('text,isEmpty');
+                  await context.sync();
+
+                  if (selection.isEmpty) {
+                    return {
+                      success: false,
+                      action: 'format_selection',
+                      error: '当前没有选中任何内容。',
+                    };
+                  }
+
+                  var changelog = [];
+                  var paragraphs = selection.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  var pj;
+                  if (data.styleName) {
+                    for (pj = 0; pj < paragraphs.items.length; pj++) {
+                      try {
+                        paragraphs.items[pj].style = data.styleName;
+                      } catch (eSty) {}
+                    }
+                    changelog.push('样式: ' + data.styleName);
+                  }
+
+                  if (data.format) {
+                    var fmtSel = data.format;
+                    var alignFailSel = 0;
+                    for (pj = 0; pj < paragraphs.items.length; pj++) {
+                      applyParagraphFormatDirect(paragraphs.items[pj], fmtSel, function () {
+                        alignFailSel++;
+                      });
+                    }
+                    if (alignFailSel > 0) {
+                      changelog.push('⚠️ 部分对齐未应用（' + alignFailSel + ' 段）');
+                    }
+                    if (fmtSel.lineSpacing != null) {
+                      changelog.push('行距: ' + fmtSel.lineSpacing);
+                    }
+                    if (fmtSel.firstLineIndent != null) {
+                      changelog.push('首缩: ' + fmtSel.firstLineIndent + 'pt');
+                    }
+                    if (fmtSel.alignment != null) {
+                      changelog.push('对齐: ' + fmtSel.alignment);
+                    }
+                    if (fmtSel.spaceBefore != null) {
+                      changelog.push('段前: ' + fmtSel.spaceBefore);
+                    }
+                    if (fmtSel.spaceAfter != null) {
+                      changelog.push('段后: ' + fmtSel.spaceAfter);
+                    }
+                  }
+
+                  if (data.font) {
+                    var f = data.font;
+                    if (f.name !== undefined) {
+                      selection.font.name = f.name;
+                      changelog.push('字体: ' + f.name);
+                    }
+                    if (f.size !== undefined) {
+                      selection.font.size = f.size;
+                      changelog.push('字号: ' + f.size);
+                    }
+                    if (f.bold !== undefined && f.bold !== null) {
+                      selection.font.bold = f.bold;
+                      changelog.push('加粗: ' + f.bold);
+                    }
+                    if (f.italic !== undefined && f.italic !== null) {
+                      selection.font.italic = f.italic;
+                      changelog.push('斜体: ' + f.italic);
+                    }
+                    if (f.color !== undefined) {
+                      selection.font.color = f.color;
+                      changelog.push('颜色: ' + f.color);
+                    }
+                    if (f.underline !== undefined) {
+                      setFontUnderline(selection, !!f.underline);
+                      changelog.push('下划线: ' + (f.underline ? 'on' : 'off'));
+                    }
+                    if (f.highlightColor !== undefined) {
+                      try {
+                        selection.font.highlightColor =
+                          f.highlightColor === null || f.highlightColor === 'None'
+                            ? 'None'
+                            : f.highlightColor;
+                        changelog.push('高亮: ' + String(f.highlightColor));
+                      } catch (hc) {}
+                    }
+                    if (f.strikethrough !== undefined) {
+                      selection.font.strikethrough = f.strikethrough;
+                      changelog.push('删除线: ' + f.strikethrough);
+                    }
+                  }
+
+                  await context.sync();
+
+                  return {
+                    success: true,
+                    action: 'format_selection',
+                    data: {
+                      textLength: selection.text.length,
+                      changelog: changelog,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'format_selection',
+                    error: '设置选区格式失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'read_paragraph_detail': {
+              result = await Word.run(async function (context) {
+                try {
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  var indices = data.indices || [];
+                  if (indices.length === 0) {
+                    var fill;
+                    for (fill = 0; fill < Math.min(paragraphs.items.length, 50); fill++) {
+                      indices.push(fill);
+                    }
+                  }
+
+                  var outList = [];
+                  var pi;
+                  for (pi = 0; pi < indices.length; pi++) {
+                    var idx0 = indices[pi];
+                    if (idx0 < 0 || idx0 >= paragraphs.items.length) continue;
+                    var p0 = paragraphs.items[idx0];
+                    p0.load('text, style');
+                  }
+                  await context.sync();
+
+                  for (pi = 0; pi < indices.length; pi++) {
+                    var idx1 = indices[pi];
+                    if (idx1 < 0 || idx1 >= paragraphs.items.length) continue;
+                    var p1 = paragraphs.items[idx1];
+                    outList.push({
+                      index: idx1,
+                      text: p1.text,
+                      length: p1.text.length,
+                      style: p1.style || '',
+                    });
+                  }
+
+                  return {
+                    success: true,
+                    action: 'read_paragraph_detail',
+                    data: { count: outList.length, paragraphs: outList },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'read_paragraph_detail',
+                    error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'edit_paragraphs': {
+              const edits = Array.isArray(data.edits) ? data.edits : [];
+              result = await Word.run(async function (context) {
+                let changeCount = 0;
+                const changelog = [];
+                const allChanges = [];
+                var body = context.document.body;
+                var bodyParagraphs = body.paragraphs;
+                bodyParagraphs.load('items');
+                await context.sync();
+
+                for (const edit of edits) {
+                  if (!edit.replaceText || String(edit.replaceText).trim() === '') {
+                    changelog.push(
+                      '⚠️ 跳过空替换: "' +
+                        String(edit.searchText || '').substring(0, 30) +
+                        '..."'
+                    );
+                    continue;
+                  }
+
+                  const searchText = String(edit.searchText || '');
+                  const results = context.document.body.search(searchText, {
+                    matchCase: true,
+                    matchWholeWord: false,
+                  });
+                  results.load('items');
+                  await context.sync();
+
+                  if (results.items.length === 0) {
+                    changelog.push('⚠️ 未找到: "' + searchText.substring(0, 30) + '..."');
+                    continue;
+                  }
+
+                  for (let ri = 0; ri < results.items.length; ri++) {
+                    results.items[ri].load(['text', 'font', 'style', 'paragraphs']);
+                  }
+                  await context.sync();
+
+                  for (let ri = 0; ri < results.items.length; ri++) {
+                    const item = results.items[ri];
+                    const para = item.paragraphs.getFirstOrNullObject();
+                    para.load('style');
+                    await context.sync();
+                    if (para.isNullObject) {
+                      continue;
+                    }
+                    const style = para.style || item.style || '';
+                    if (style.indexOf('Heading') !== -1 || style.indexOf('标题') !== -1) {
+                      changelog.push(
+                        '⚠️ 跳过标题段落: "' + searchText.substring(0, 30) + '..."'
+                      );
+                      continue;
+                    }
+
+                    allChanges.push({
+                      item: item,
+                      paragraph: para,
+                      replaceText: edit.replaceText,
+                      highlightColor: edit.highlightColor,
+                      searchText: searchText,
+                    });
+                  }
+                }
+
+                for (let ci = 0; ci < allChanges.length; ci++) {
+                  const change = allChanges[ci];
+                  var targetIndex = -1;
+                  for (var pi = 0; pi < bodyParagraphs.items.length; pi++) {
+                    if (bodyParagraphs.items[pi] === change.paragraph) {
+                      targetIndex = pi;
+                      break;
+                    }
+                  }
+                  if (targetIndex < 0) {
+                    await safeReplaceText(change.paragraph, String(change.replaceText), context);
+                  } else {
+                    var affectedStart = Math.max(0, targetIndex - 2);
+                    var affectedEnd = Math.min(bodyParagraphs.items.length - 1, targetIndex + 2);
+                    var snapshot = await captureFormatSnapshot(
+                      body,
+                      context,
+                      affectedStart,
+                      affectedEnd
+                    );
+                    await safeReplaceText(change.paragraph, String(change.replaceText), context);
+                    await restoreFormatSnapshot(body, context, snapshot);
+                  }
+                  change.item.font.highlightColor = change.highlightColor || 'Yellow';
+                  changeCount++;
+                  changelog.push(
+                    '✅ 替换: "' +
+                      String(change.searchText).substring(0, 25) +
+                      '..." → "' +
+                      String(change.replaceText).substring(0, 25) +
+                      '..."'
+                  );
+                }
+                await context.sync();
+
+                var nonEmptyEdits = edits.filter(function (e) {
+                  return e.replaceText && String(e.replaceText).trim() !== '';
+                }).length;
+
+                var hasChanges = changeCount > 0;
+                return {
+                  success: hasChanges,
+                  action: 'edit_paragraphs',
+                  changeCount: changeCount,
+                  totalEdits: data.edits.length,
+                  failedEdits: Math.max(0, data.edits.length - changeCount),
+                  changelog: changelog,
+                  error: hasChanges
+                    ? undefined
+                    : nonEmptyEdits > 0
+                      ? '⚠️ 所有 ' +
+                        data.edits.length +
+                        ' 个替换全部失败！没有任何文本被修改。可能原因：searchText 与文档实际内容不匹配。建议先用 read_paragraph_detail 获取完整段落文本后再精确匹配。'
+                      : '未执行任何替换（replaceText 均为空或无效）。',
+                };
+              });
+              break;
+            }
+            case 'get_status':
+              result = await runGetStatus();
+              break;
+            case 'set_font':
+              result = await runSetFont(data);
+              break;
+            case 'set_paragraph_format':
+              result = await runSetParagraphFormat(data);
+              break;
+            case 'apply_style':
+              result = await runApplyStyle(data);
+              break;
+            case 'apply_format':
+              result = await runApplyFormat(data);
+              break;
+            case 'clear_highlights':
+              result = await runClearHighlights();
+              break;
+            case 'read_tables':
+              result = await runReadTables();
+              break;
+            case 'edit_table_cell':
+              result = await runEditTableCell(data);
+              break;
+            case 'insert_table':
+              result = await runInsertTable(data);
+              break;
+            case 'insert_paragraph': {
+              result = await Word.run(async function (context) {
+                try {
+                  var body = context.document.body;
+                  var paragraphs = body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  var idx =
+                    data.paragraphIndex != null ? data.paragraphIndex : paragraphs.items.length - 1;
+                  var ref = paragraphs.items[idx];
+                  if (!ref) {
+                    return {
+                      success: false,
+                      action: 'insert_paragraph',
+                      error: '段落索引 ' + idx + ' 不存在',
+                    };
+                  }
+
+                  var text = data.text || '';
+                  var position = data.position || 'After';
+                  var lines = text.split('\n');
+                  var affectedStart = Math.max(0, idx - 2);
+                  var affectedEnd = Math.min(paragraphs.items.length - 1, idx + 2);
+                  var snapshot = await captureFormatSnapshot(body, context, affectedStart, affectedEnd);
+
+                  if (lines.length === 1) {
+                    var newP = await safeInsertParagraph(
+                      ref,
+                      lines[0],
+                      insertLocationFromPosition(position),
+                      context
+                    );
+                    if (data.styleName) {
+                      newP.style = data.styleName;
+                    }
+                  } else {
+                    var firstP = await safeInsertParagraph(
+                      ref,
+                      lines[0],
+                      insertLocationFromPosition(position),
+                      context
+                    );
+                    if (data.styleName) {
+                      firstP.style = data.styleName;
+                    }
+                    var lastP = firstP;
+                    for (var i = 1; i < lines.length; i++) {
+                      lastP = await safeInsertParagraph(
+                        lastP,
+                        lines[i],
+                        Word.InsertLocation.after,
+                        context
+                      );
+                      if (data.styleName) {
+                        lastP.style = data.styleName;
+                      }
+                    }
+                  }
+                  await restoreFormatSnapshot(body, context, snapshot);
+
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'insert_paragraph',
+                    data: { insertedLines: lines.length, atIndex: idx, position: position },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'insert_paragraph',
+                    error: '插入失败: ' + err.message,
+                  };
+                }
+              });
+              break;
+            }
+            case 'insert_paragraphs_batch': {
+              result = await Word.run(async function (context) {
+                try {
+                  var items = data.items || [];
+                  if (items.length === 0) {
+                    return {
+                      success: false,
+                      action: 'insert_paragraphs_batch',
+                      error: '缺少 items 参数',
+                    };
+                  }
+
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  var totalParas = paragraphs.items.length;
+                  var insertedCount = 0;
+                  var changelog = [];
+
+                  var sorted = items.slice().sort(function (a, b) {
+                    var ai = a.index != null ? a.index : totalParas - 1;
+                    var bi = b.index != null ? b.index : totalParas - 1;
+                    return bi - ai;
+                  });
+
+                  for (var s = 0; s < sorted.length; s++) {
+                    var item = sorted[s];
+                    var idx = item.index != null ? item.index : totalParas - 1;
+                    var ref = paragraphs.items[idx];
+                    if (!ref) {
+                      changelog.push('⚠️ 索引 ' + idx + ' 不存在，跳过');
+                      continue;
+                    }
+
+                    var pos = item.position || 'After';
+                    var lines = (item.text || '').split('\n');
+
+                    var firstP = await safeInsertParagraph(
+                      ref,
+                      lines[0],
+                      insertLocationFromPosition(pos),
+                      context
+                    );
+                    if (item.style) {
+                      firstP.style = item.style;
+                    }
+
+                    var lastP = firstP;
+                    for (var li = 1; li < lines.length; li++) {
+                      lastP = await safeInsertParagraph(
+                        lastP,
+                        lines[li],
+                        Word.InsertLocation.after,
+                        context
+                      );
+                      if (item.style) {
+                        lastP.style = item.style;
+                      }
+                    }
+
+                    insertedCount += lines.length;
+                    var preview =
+                      lines[0].substring(0, 30) +
+                      (lines.length > 1 ? ' (+' + (lines.length - 1) + '行)' : '');
+                    changelog.push('✅ 在 [' + idx + '] ' + pos + ' 插入: "' + preview + '"');
+                  }
+
+                  await context.sync();
+                  if (insertedCount === 0 && items.length > 0) {
+                    return {
+                      success: false,
+                      action: 'insert_paragraphs_batch',
+                      error: '未插入任何段落（参考索引均无效或全部被跳过）。请 read_structure 核对段落索引',
+                      data: { insertedParagraphs: 0, changelog: changelog },
+                    };
+                  }
+                  var batchData = { insertedParagraphs: insertedCount, changelog: changelog };
+                  var batchWarn = extractWarningsFromChangelog(changelog);
+                  if (batchWarn.length) {
+                    batchData.warnings = batchWarn;
+                  }
+                  return {
+                    success: true,
+                    action: 'insert_paragraphs_batch',
+                    data: batchData,
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'insert_paragraphs_batch',
+                    error: '批量插入失败: ' + err.message,
+                  };
+                }
+              });
+              break;
+            }
+            case 'insert_page_break':
+              result = await runInsertPageBreak(data);
+              break;
+            case 'insert_comment':
+              result = await runInsertComment(data);
+              break;
+            case 'delete_paragraphs': {
+              result = await Word.run(async function (context) {
+                try {
+                  var indices = data.indices || [];
+                  if (indices.length === 0) {
+                    return {
+                      success: false,
+                      action: 'delete_paragraphs',
+                      error: '缺少 indices 参数',
+                    };
+                  }
+
+                  var changelog = [];
+                  var sorted = indices.slice().sort(function (a, b) {
+                    return b - a;
+                  });
+                  var actuallyDeleted = 0;
+
+                  for (var di = 0; di < sorted.length; di++) {
+                    var idx = sorted[di];
+                    var body = context.document.body;
+                    var paragraphs = body.paragraphs;
+                    paragraphs.load('items');
+                    await context.sync();
+
+                    var total = paragraphs.items.length;
+                    if (idx < 0 || idx >= total) {
+                      changelog.push('⚠️ 索引 ' + idx + ' 不存在，跳过');
+                      continue;
+                    }
+                    var p = paragraphs.items[idx];
+                    p.load('text');
+                    await context.sync();
+                    var affectedStart = Math.max(0, idx - 2);
+                    var affectedEnd = Math.min(total - 1, idx + 2);
+                    var snapshot = await captureFormatSnapshot(
+                      body,
+                      context,
+                      affectedStart,
+                      affectedEnd
+                    );
+                    var preview = (p.text || '').substring(0, 40);
+                    var deletedRange = p.getRange(Word.RangeLocation.whole);
+                    deletedRange.delete();
+                    await context.sync();
+
+                    var nextPara = deletedRange.paragraphs.getFirstOrNullObject();
+                    nextPara.load('text');
+                    await context.sync();
+                    if (!nextPara.isNullObject && (nextPara.text || '').trim() === '') {
+                      var prevPara = nextPara.getPreviousOrNullObject();
+                      prevPara.load('text');
+                      await context.sync();
+                      if (!prevPara.isNullObject && (prevPara.text || '').trim() === '') {
+                        nextPara.delete();
+                        await context.sync();
+                      }
+                    }
+
+                    await restoreFormatSnapshot(body, context, snapshot);
+                    actuallyDeleted++;
+                    changelog.push('✅ 删除 [' + idx + ']: "' + preview + '..."');
+                  }
+
+                  if (actuallyDeleted === 0) {
+                    return {
+                      success: false,
+                      action: 'delete_paragraphs',
+                      error: '未删除任何段落（indices 均越界或无效）。请先 read_structure 核对索引',
+                      data: { deletedCount: 0, changelog: changelog },
+                    };
+                  }
+
+                  return {
+                    success: true,
+                    action: 'delete_paragraphs',
+                    data: { deletedCount: actuallyDeleted, changelog: changelog },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'delete_paragraphs',
+                    error: '删除失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'delete_text': {
+              result = await Word.run(async function (context) {
+                try {
+                  var searchText = data.searchText || '';
+                  if (!searchText) {
+                    return {
+                      success: false,
+                      action: 'delete_text',
+                      error: '缺少 searchText 参数',
+                    };
+                  }
+
+                  var replaceText = data.replaceText != null ? data.replaceText : '';
+                  var matchCase = data.matchCase != null ? data.matchCase : true;
+                  var matchWholeWord = data.matchWholeWord != null ? data.matchWholeWord : false;
+                  var maxMatches = data.maxMatches || 0;
+
+                  var results = context.document.body.search(searchText, {
+                    matchCase: matchCase,
+                    matchWholeWord: matchWholeWord,
+                  });
+                  results.load('items');
+                  await context.sync();
+
+                  var totalFound = results.items.length;
+                  if (totalFound === 0) {
+                    return {
+                      success: false,
+                      action: 'delete_text',
+                      error: '未找到匹配文本: "' + searchText.substring(0, 50) + '"',
+                    };
+                  }
+
+                  var processCount = maxMatches > 0 ? Math.min(maxMatches, totalFound) : totalFound;
+                  var changelog = [];
+
+                  // 从后往前处理，避免多处匹配时 Range 引用漂移
+                  for (var ri = processCount - 1; ri >= 0; ri--) {
+                    var item = results.items[ri];
+                    var ord = ri + 1;
+                    if (replaceText === '') {
+                      item.delete();
+                      changelog.unshift(
+                        '✅ 删除第 ' + ord + ' 处: "' + searchText.substring(0, 30) + '"'
+                      );
+                    } else {
+                      item.insertText(replaceText, Word.InsertLocation.replace);
+                      changelog.unshift(
+                        '✅ 替换第 ' +
+                          ord +
+                          ' 处: "' +
+                          searchText.substring(0, 20) +
+                          '" → "' +
+                          String(replaceText).substring(0, 20) +
+                          '"'
+                      );
+                    }
+                  }
+
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'delete_text',
+                    data: {
+                      totalFound: totalFound,
+                      processedCount: processCount,
+                      operation: replaceText === '' ? 'delete' : 'replace',
+                      changelog: changelog,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'delete_text',
+                    error: '操作失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'delete_range': {
+              result = await Word.run(async function (context) {
+                try {
+                  var startIndex = data.startIndex;
+                  var endIndex = data.endIndex;
+                  if (startIndex == null || endIndex == null) {
+                    return {
+                      success: false,
+                      action: 'delete_range',
+                      error: '缺少 startIndex 或 endIndex 参数',
+                    };
+                  }
+                  if (startIndex > endIndex) {
+                    var tmp = startIndex;
+                    startIndex = endIndex;
+                    endIndex = tmp;
+                  }
+
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+
+                  var total = paragraphs.items.length;
+                  if (total === 0) {
+                    return {
+                      success: false,
+                      action: 'delete_range',
+                      error: '文档无段落',
+                    };
+                  }
+                  if (startIndex < 0) startIndex = 0;
+                  if (endIndex >= total) endIndex = total - 1;
+
+                  var startP = paragraphs.items[startIndex];
+                  var endP = paragraphs.items[endIndex];
+                  if (!startP || !endP) {
+                    return {
+                      success: false,
+                      action: 'delete_range',
+                      error: '段落索引无效',
+                    };
+                  }
+
+                  startP.load('text');
+                  endP.load('text');
+                  await context.sync();
+
+                  var startPreview = (startP.text || '').substring(0, 30);
+                  var endPreview = (endP.text || '').substring(0, 30);
+
+                  var startRange = startP.getRange(Word.RangeLocation.whole);
+                  var endRange = endP.getRange(Word.RangeLocation.whole);
+                  var fullRange = startRange.expandTo(endRange);
+                  fullRange.delete();
+
+                  await context.sync();
+
+                  var deletedCount = endIndex - startIndex + 1;
+                  var changelog = [];
+                  changelog.push(
+                    '✅ 删除 [' +
+                      startIndex +
+                      '] 到 [' +
+                      endIndex +
+                      ']（共 ' +
+                      deletedCount +
+                      ' 段）'
+                  );
+                  changelog.push('   起始: "' + startPreview + '..."');
+                  changelog.push('   结束: "' + endPreview + '..."');
+
+                  return {
+                    success: true,
+                    action: 'delete_range',
+                    data: {
+                      deletedCount: deletedCount,
+                      startIndex: startIndex,
+                      endIndex: endIndex,
+                      changelog: changelog,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'delete_range',
+                    error: '删除失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'read_hyperlinks': {
+              result = await Word.run(async function (context) {
+                try {
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+                  var links = [];
+                  var n = paragraphs.items.length;
+                  var pi;
+                  for (pi = 0; pi < n; pi++) {
+                    var rg = paragraphs.items[pi].getRange(Word.RangeLocation.whole);
+                    rg.load('text, hyperlink');
+                  }
+                  await context.sync();
+                  for (pi = 0; pi < n; pi++) {
+                    var rg2 = paragraphs.items[pi].getRange(Word.RangeLocation.whole);
+                    var hyp = rg2.hyperlink;
+                    if (hyp) {
+                      hyp.load('address, screenTip, textToDisplay');
+                    }
+                  }
+                  await context.sync();
+                  for (pi = 0; pi < n; pi++) {
+                    var rg3 = paragraphs.items[pi].getRange(Word.RangeLocation.whole);
+                    if (rg3.hyperlink) {
+                      links.push({
+                        paragraphIndex: pi,
+                        text: (rg3.text || '').substring(0, 60),
+                        address: rg3.hyperlink.address || '',
+                        screenTip: rg3.hyperlink.screenTip || '',
+                        textToDisplay: rg3.hyperlink.textToDisplay || '',
+                      });
+                    }
+                  }
+                  return {
+                    success: true,
+                    action: 'read_hyperlinks',
+                    data: { totalLinks: links.length, links: links },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'read_hyperlinks',
+                    error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'remove_hyperlinks': {
+              result = await Word.run(async function (context) {
+                try {
+                  var targetType = data.hyperlinkTarget || 'all';
+                  var clearFmt = data.clearFormat !== false;
+                  var removedCount = 0;
+                  var changelog = [];
+
+                  function clearBlueUnderline(fontObj) {
+                    try {
+                      fontObj.load('color, underline');
+                    } catch (le) {}
+                  }
+
+                  /** 删除 rng 内全部超链区域（段内多个链必须用 getHyperlinkRanges，整段 .hyperlink 常无效） */
+                  async function removeHyperlinksInScope(context, rng) {
+                    var n = 0;
+                    try {
+                      if (typeof rng.getHyperlinkRanges === 'function') {
+                        var hcol = rng.getHyperlinkRanges();
+                        hcol.load('items');
+                        await context.sync();
+                        var hx;
+                        for (hx = 0; hx < hcol.items.length; hx++) {
+                          hcol.items[hx].load('hyperlink');
+                        }
+                        await context.sync();
+                        for (hx = hcol.items.length - 1; hx >= 0; hx--) {
+                          var lrx = hcol.items[hx];
+                          try {
+                            if (lrx.hyperlink) {
+                              lrx.hyperlink.delete();
+                              n++;
+                            }
+                          } catch (de1) {
+                            try {
+                              lrx.hyperlink = '';
+                              n++;
+                            } catch (de2) {}
+                          }
+                        }
+                        await context.sync();
+                        return n;
+                      }
+                    } catch (hrErr) {}
+                    try {
+                      rng.load('hyperlink');
+                      await context.sync();
+                      if (rng.hyperlink) {
+                        try {
+                          rng.hyperlink.delete();
+                          return 1;
+                        } catch (d1) {
+                          try {
+                            rng.hyperlink = '';
+                            return 1;
+                          } catch (d2) {}
+                        }
+                      }
+                    } catch (e0) {}
+                    return 0;
+                  }
+
+                  /** 清除 body 内段落典型「链接蓝+下划线」（与正文逻辑一致） */
+                  async function clearBlueFormatInBody(context, bodyObj) {
+                    try {
+                      var paras = bodyObj.paragraphs;
+                      paras.load('items');
+                      await context.sync();
+                      var j;
+                      for (j = 0; j < paras.items.length; j++) {
+                        clearBlueUnderline(paras.items[j].font);
+                      }
+                      await context.sync();
+                      for (j = 0; j < paras.items.length; j++) {
+                        var f = paras.items[j].font;
+                        var c = String(f.color || '').toLowerCase();
+                        if (
+                          c.indexOf('0563c1') >= 0 ||
+                          c.indexOf('0000ff') >= 0 ||
+                          c === 'blue'
+                        ) {
+                          f.color = 'black';
+                          setFontUnderline(paras.items[j], false);
+                        }
+                      }
+                    } catch (eClr) {}
+                  }
+
+                  if (targetType === 'all') {
+                    var bodyWhole = context.document.body.getRange(Word.RangeLocation.whole);
+                    removedCount += await removeHyperlinksInScope(context, bodyWhole);
+
+                    var sections = context.document.sections;
+                    sections.load('items');
+                    await context.sync();
+                    var Ht = Word.HeaderFooterType || {};
+                    var hfTypes = [
+                      Ht.primary != null ? Ht.primary : 'Primary',
+                      Ht.firstPage != null ? Ht.firstPage : 'FirstPage',
+                      Ht.evenPages != null ? Ht.evenPages : 'EvenPages',
+                    ];
+                    var secIdx;
+                    for (secIdx = 0; secIdx < sections.items.length; secIdx++) {
+                      var sec = sections.items[secIdx];
+                      var ti;
+                      for (ti = 0; ti < hfTypes.length; ti++) {
+                        var hft = hfTypes[ti];
+                        try {
+                          var hdr = sec.getHeader(hft);
+                          var hdrRng = hdr.body.getRange(Word.RangeLocation.whole);
+                          removedCount += await removeHyperlinksInScope(context, hdrRng);
+                        } catch (hdrEx) {}
+                        try {
+                          var ftr = sec.getFooter(hft);
+                          var ftrRng = ftr.body.getRange(Word.RangeLocation.whole);
+                          removedCount += await removeHyperlinksInScope(context, ftrRng);
+                        } catch (ftrEx) {}
+                      }
+                    }
+
+                    if (clearFmt) {
+                      await clearBlueFormatInBody(context, context.document.body);
+                      sections.load('items');
+                      await context.sync();
+                      for (secIdx = 0; secIdx < sections.items.length; secIdx++) {
+                        sec = sections.items[secIdx];
+                        for (ti = 0; ti < hfTypes.length; ti++) {
+                          hft = hfTypes[ti];
+                          try {
+                            var hdr2 = sec.getHeader(hft);
+                            await clearBlueFormatInBody(context, hdr2.body);
+                          } catch (eH2) {}
+                          try {
+                            var ftr2 = sec.getFooter(hft);
+                            await clearBlueFormatInBody(context, ftr2.body);
+                          } catch (eF2) {}
+                        }
+                      }
+                    }
+                    await context.sync();
+                    changelog.push(
+                      '✅ 全文档清除 ' + removedCount + ' 处超链接（正文+各节页眉/页脚，含段内多链）'
+                    );
+                  } else if (targetType === 'paragraph') {
+                    var indices = data.indices || [];
+                    var paras2 = context.document.body.paragraphs;
+                    paras2.load('items');
+                    await context.sync();
+                    var k;
+                    for (k = 0; k < indices.length; k++) {
+                      var idx = indices[k];
+                      if (idx >= 0 && idx < paras2.items.length) {
+                        var pr3 = paras2.items[idx].getRange(Word.RangeLocation.whole);
+                        removedCount += await removeHyperlinksInScope(context, pr3);
+                        if (clearFmt) {
+                          paras2.items[idx].font.color = 'black';
+                          setFontUnderline(paras2.items[idx], false);
+                        }
+                      }
+                    }
+                    await context.sync();
+                    changelog.push('✅ 清除 ' + removedCount + ' 处超链接（指定段落内全部链）');
+                  } else if (targetType === 'search') {
+                    var searchText = data.searchText || '';
+                    if (!searchText) {
+                      return {
+                        success: false,
+                        action: 'remove_hyperlinks',
+                        error: '缺少 searchText',
+                      };
+                    }
+                    var res = context.document.body.search(searchText, { matchCase: true });
+                    res.load('items');
+                    await context.sync();
+                    var si;
+                    for (si = res.items.length - 1; si >= 0; si--) {
+                      var it = res.items[si];
+                      removedCount += await removeHyperlinksInScope(context, it);
+                      if (clearFmt) {
+                        it.font.color = 'black';
+                        setFontUnderline(it, false);
+                      }
+                    }
+                    await context.sync();
+                    changelog.push('✅ 清除 ' + removedCount + ' 处与搜索相关的超链接');
+                  }
+
+                  return {
+                    success: true,
+                    action: 'remove_hyperlinks',
+                    data: { removedCount: removedCount, changelog: changelog },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'remove_hyperlinks',
+                    error: '清除失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'add_table_row': {
+              result = await Word.run(async function (context) {
+                try {
+                  var tables = context.document.body.tables;
+                  tables.load('items');
+                  await context.sync();
+                  var tableIdx = data.tableIndex != null ? data.tableIndex : 0;
+                  var table = tables.items[tableIdx];
+                  if (!table) {
+                    return {
+                      success: false,
+                      action: 'add_table_row',
+                      error: '表格 ' + tableIdx + ' 不存在',
+                    };
+                  }
+                  var values = data.values || [];
+                  var count = data.rowCount != null ? data.rowCount : 1;
+                  var rowLoc = Word.RowInsertLocation
+                    ? Word.RowInsertLocation.end
+                    : 'End';
+                  if (values.length > 0) {
+                    table.addRows(rowLoc, values.length, values);
+                  } else {
+                    table.addRows(rowLoc, count);
+                  }
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'add_table_row',
+                    data: {
+                      addedRows: values.length > 0 ? values.length : count,
+                      tableIndex: tableIdx,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'add_table_row',
+                    error: '添加行失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'insert_toc': {
+              result = await Word.run(async function (context) {
+                try {
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+                  var idx = data.paragraphIndex != null ? data.paragraphIndex : 0;
+                  var ref = paragraphs.items[idx];
+                  if (!ref) {
+                    ref = paragraphs.items[0];
+                  }
+                  if (!ref) {
+                    return {
+                      success: false,
+                      action: 'insert_toc',
+                      error: '文档无段落',
+                    };
+                  }
+                  var pos = data.position || 'Before';
+                  var tocTitle = ref.insertParagraph('目  录', insertLocationFromPosition(pos));
+                  tocTitle.style = 'Heading 1';
+                  tocTitle.alignment = Word.Alignment.centered;
+                  var tocParagraph = tocTitle.insertParagraph('', Word.InsertLocation.after);
+                  try {
+                    var ft = Word.FieldType ? Word.FieldType.tableOfContents : 'TableOfContents';
+                    tocParagraph.insertField(
+                      Word.InsertLocation.end,
+                      ft,
+                      '\\o "1-3" \\h \\z \\u',
+                      true
+                    );
+                  } catch (e) {
+                    tocParagraph.insertText(
+                      '[请在此处手动插入目录：引用 → 目录 → 自动目录]',
+                      Word.InsertLocation.replace
+                    );
+                    await context.sync();
+                    var tocNote =
+                      'TOC 域在当前 Word 版本可能不可用，已插入占位文字。请手动：引用 → 目录 → 自动目录';
+                    return {
+                      success: true,
+                      action: 'insert_toc',
+                      data: {
+                        note: tocNote,
+                        warnings: [tocNote],
+                      },
+                    };
+                  }
+                  tocParagraph.insertBreak(Word.BreakType.page, Word.InsertLocation.after);
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'insert_toc',
+                    data: { insertedAt: idx, position: pos },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'insert_toc',
+                    error: '插入目录失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'set_header_footer': {
+              result = await Word.run(async function (context) {
+                try {
+                  var sections = context.document.sections;
+                  sections.load('items');
+                  await context.sync();
+                  var sectionIdx = data.sectionIndex != null ? data.sectionIndex : 0;
+                  var section = sections.items[sectionIdx];
+                  if (!section) {
+                    return {
+                      success: false,
+                      action: 'set_header_footer',
+                      error: '节 ' + sectionIdx + ' 不存在',
+                    };
+                  }
+                  var changelog = [];
+                  var hft = data.headerFooterType || 'Primary';
+                  var headerFooterEnum = Word.HeaderFooterType
+                    ? Word.HeaderFooterType.primary
+                    : 'Primary';
+                  if (Word.HeaderFooterType) {
+                    if (hft === 'FirstPage') {
+                      headerFooterEnum = Word.HeaderFooterType.firstPage;
+                    } else if (hft === 'EvenPages') {
+                      headerFooterEnum = Word.HeaderFooterType.evenPages;
+                    } else {
+                      headerFooterEnum = Word.HeaderFooterType.primary;
+                    }
+                  }
+
+                  if (data.headerText != null) {
+                    var header = section.getHeader(headerFooterEnum);
+                    header.clear();
+                    var headerP = header.insertParagraph(data.headerText, Word.InsertLocation.start);
+                    if (data.headerAlignment) {
+                      headerP.alignment = mapAlignment(data.headerAlignment);
+                    }
+                    if (data.headerFont) {
+                      if (data.headerFont.name) {
+                        headerP.font.name = data.headerFont.name;
+                      }
+                      if (data.headerFont.size) {
+                        headerP.font.size = data.headerFont.size;
+                      }
+                      if (data.headerFont.bold) {
+                        headerP.font.bold = data.headerFont.bold;
+                      }
+                    }
+                    changelog.push(
+                      '✅ 设置页眉: "' + String(data.headerText).substring(0, 30) + '"'
+                    );
+                  }
+
+                  if (data.footerText != null) {
+                    var footer = section.getFooter(headerFooterEnum);
+                    footer.clear();
+                    var footerP = footer.insertParagraph(data.footerText, Word.InsertLocation.start);
+                    if (data.footerAlignment) {
+                      footerP.alignment = mapAlignment(data.footerAlignment);
+                    }
+                    if (data.footerFont) {
+                      if (data.footerFont.name) {
+                        footerP.font.name = data.footerFont.name;
+                      }
+                      if (data.footerFont.size) {
+                        footerP.font.size = data.footerFont.size;
+                      }
+                    }
+                    changelog.push(
+                      '✅ 设置页脚: "' + String(data.footerText).substring(0, 30) + '"'
+                    );
+                  }
+
+                  if (data.pageNumber) {
+                    var pageFooter = section.getFooter(headerFooterEnum);
+                    if (data.footerText == null) {
+                      pageFooter.clear();
+                    }
+                    var pageP = pageFooter.insertParagraph(
+                      '',
+                      data.footerText != null ? Word.InsertLocation.end : Word.InsertLocation.start
+                    );
+                    pageP.alignment = Word.Alignment.centered;
+                    try {
+                      var pf = Word.FieldType ? Word.FieldType.page : 'Page';
+                      pageP.insertField(Word.InsertLocation.end, pf, '', true);
+                    } catch (e) {
+                      pageP.insertText('- # -', Word.InsertLocation.replace);
+                      changelog.push('⚠️ 页码域不支持，已插入占位符');
+                    }
+                    changelog.push('✅ 设置页码');
+                  }
+
+                  await context.sync();
+                  var hfData = { sectionIndex: sectionIdx, changelog: changelog };
+                  var hfWarn = extractWarningsFromChangelog(changelog);
+                  if (hfWarn.length) {
+                    hfData.warnings = hfWarn;
+                  }
+                  return {
+                    success: true,
+                    action: 'set_header_footer',
+                    data: hfData,
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'set_header_footer',
+                    error: '设置失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'insert_image': {
+              result = await Word.run(async function (context) {
+                try {
+                  var base64 = data.base64 || '';
+                  var imageUrl = data.imageUrl || '';
+                  if (!base64 && !imageUrl) {
+                    return {
+                      success: false,
+                      action: 'insert_image',
+                      error: '缺少 base64 或 imageUrl 参数',
+                    };
+                  }
+                  if (!base64) {
+                    return {
+                      success: false,
+                      action: 'insert_image',
+                      error: '暂不支持 URL 插入，请提供 base64 编码的图片数据',
+                    };
+                  }
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+                  var idx =
+                    data.paragraphIndex != null
+                      ? data.paragraphIndex
+                      : paragraphs.items.length - 1;
+                  var ref = paragraphs.items[idx];
+                  if (!ref) {
+                    return {
+                      success: false,
+                      action: 'insert_image',
+                      error: '段落 ' + idx + ' 不存在',
+                    };
+                  }
+                  var range = ref.getRange(Word.RangeLocation.after);
+                  var image = range.insertInlinePictureFromBase64(base64, Word.InsertLocation.after);
+                  if (data.width) {
+                    image.width = data.width;
+                  }
+                  if (data.height) {
+                    image.height = data.height;
+                  }
+                  if (data.altTitle) {
+                    image.altTextTitle = data.altTitle;
+                  }
+                  if (data.altDescription) {
+                    image.altTextDescription = data.altDescription;
+                  }
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'insert_image',
+                    data: {
+                      insertedAt: idx,
+                      width: data.width,
+                      height: data.height,
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'insert_image',
+                    error: '插入图片失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'set_page_setup': {
+              result = await Word.run(async function (context) {
+                try {
+                  var sections = context.document.sections;
+                  sections.load('items');
+                  await context.sync();
+                  var sectionIdx = data.sectionIndex != null ? data.sectionIndex : 0;
+                  var section = sections.items[sectionIdx];
+                  if (!section) {
+                    return {
+                      success: false,
+                      action: 'set_page_setup',
+                      error: '节 ' + sectionIdx + ' 不存在',
+                    };
+                  }
+                  var changelog = [];
+                  section.pageSetup.load('topMargin, bottomMargin, orientation');
+                  await context.sync();
+                  if (data.marginTop != null) {
+                    section.pageSetup.topMargin = data.marginTop;
+                    changelog.push('✅ 上边距: ' + data.marginTop + 'pt');
+                  }
+                  if (data.marginBottom != null) {
+                    section.pageSetup.bottomMargin = data.marginBottom;
+                    changelog.push('✅ 下边距: ' + data.marginBottom + 'pt');
+                  }
+                  if (data.orientation != null) {
+                    try {
+                      if (data.orientation === 'Landscape') {
+                        section.pageSetup.orientation = Word.Orientation
+                          ? Word.Orientation.landscape
+                          : 'Landscape';
+                      } else {
+                        section.pageSetup.orientation = Word.Orientation
+                          ? Word.Orientation.portrait
+                          : 'Portrait';
+                      }
+                      changelog.push('✅ 纸张方向: ' + data.orientation);
+                    } catch (e) {
+                      changelog.push('⚠️ 纸张方向 API 不可用，请在 Word：布局 → 方向');
+                    }
+                  }
+                  await context.sync();
+                  var psData = { sectionIndex: sectionIdx, changelog: changelog };
+                  var psWarn = extractWarningsFromChangelog(changelog);
+                  if (psWarn.length) {
+                    psData.warnings = psWarn;
+                  }
+                  return {
+                    success: true,
+                    action: 'set_page_setup',
+                    data: psData,
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'set_page_setup',
+                    error: '设置失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'track_changes': {
+              result = await Word.run(async function (context) {
+                try {
+                  var mode = data.mode || 'toggle';
+                  try {
+                    context.document.load('changeTrackingMode');
+                    await context.sync();
+                    var currentMode = context.document.changeTrackingMode;
+                    var newMode;
+                    if (mode === 'on') {
+                      newMode = Word.ChangeTrackingMode
+                        ? Word.ChangeTrackingMode.trackAll
+                        : 'TrackAll';
+                    } else if (mode === 'off') {
+                      newMode = Word.ChangeTrackingMode ? Word.ChangeTrackingMode.off : 'Off';
+                    } else {
+                      var offVal = Word.ChangeTrackingMode ? Word.ChangeTrackingMode.off : 'Off';
+                      var trackVal = Word.ChangeTrackingMode
+                        ? Word.ChangeTrackingMode.trackAll
+                        : 'TrackAll';
+                      newMode = currentMode === offVal ? trackVal : offVal;
+                    }
+                    context.document.changeTrackingMode = newMode;
+                    await context.sync();
+                    return {
+                      success: true,
+                      action: 'track_changes',
+                      data: { previousMode: currentMode, newMode: newMode },
+                    };
+                  } catch (e) {
+                    return {
+                      success: false,
+                      action: 'track_changes',
+                      error:
+                        '修订模式 API 不支持当前 Word 版本（需要 WordApi 1.6+）。请手动：审阅 → 修订',
+                    };
+                  }
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'track_changes',
+                    error: '操作失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'set_properties': {
+              result = await Word.run(async function (context) {
+                try {
+                  var props = context.document.properties;
+                  var changelog = [];
+                  if (data.title != null) {
+                    props.title = data.title;
+                    changelog.push('✅ 标题: ' + data.title);
+                  }
+                  if (data.subject != null) {
+                    props.subject = data.subject;
+                    changelog.push('✅ 主题: ' + data.subject);
+                  }
+                  if (data.author != null) {
+                    props.author = data.author;
+                    changelog.push('✅ 作者: ' + data.author);
+                  }
+                  if (data.company != null) {
+                    props.company = data.company;
+                    changelog.push('✅ 公司: ' + data.company);
+                  }
+                  if (data.manager != null) {
+                    props.manager = data.manager;
+                    changelog.push('✅ 经理: ' + data.manager);
+                  }
+                  if (data.keywords != null) {
+                    props.keywords = data.keywords;
+                    changelog.push('✅ 关键词: ' + data.keywords);
+                  }
+                  if (data.comments != null) {
+                    props.comments = data.comments;
+                    changelog.push('✅ 备注: ' + data.comments);
+                  }
+                  if (data.category != null) {
+                    props.category = data.category;
+                    changelog.push('✅ 类别: ' + data.category);
+                  }
+                  if (data.customProperties) {
+                    try {
+                      var cp = data.customProperties;
+                      for (var key in cp) {
+                        if (Object.prototype.hasOwnProperty.call(cp, key)) {
+                          props.customProperties.add(key, cp[key]);
+                          changelog.push('✅ 自定义: ' + key + ' = ' + cp[key]);
+                        }
+                      }
+                    } catch (e) {
+                      changelog.push(
+                        '⚠️ 自定义属性设置失败: ' + (e && e.message ? e.message : String(e))
+                      );
+                    }
+                  }
+                  await context.sync();
+                  var propData = { changelog: changelog };
+                  var propWarn = extractWarningsFromChangelog(changelog);
+                  if (propWarn.length) {
+                    propData.warnings = propWarn;
+                  }
+                  return {
+                    success: true,
+                    action: 'set_properties',
+                    data: propData,
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'set_properties',
+                    error: '设置属性失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'content_control': {
+              result = await Word.run(async function (context) {
+                try {
+                  var ccAction = data.ccAction || 'insert';
+                  var changelog = [];
+
+                  if (ccAction === 'list') {
+                    var ccs = context.document.contentControls;
+                    ccs.load('items');
+                    await context.sync();
+                    var list = [];
+                    var ci;
+                    for (ci = 0; ci < ccs.items.length; ci++) {
+                      ccs.items[ci].load('tag, title, text, type');
+                    }
+                    await context.sync();
+                    for (ci = 0; ci < ccs.items.length; ci++) {
+                      var cco = ccs.items[ci];
+                      list.push({
+                        index: ci,
+                        tag: cco.tag,
+                        title: cco.title,
+                        text: (cco.text || '').substring(0, 50),
+                        type: cco.type,
+                      });
+                    }
+                    return {
+                      success: true,
+                      action: 'content_control',
+                      data: { totalControls: list.length, controls: list },
+                    };
+                  }
+
+                  if (ccAction === 'delete') {
+                    var ccs2 = context.document.contentControls;
+                    ccs2.load('items');
+                    await context.sync();
+                    var tagFilter = data.tag || '';
+                    var deleted = 0;
+                    var dj;
+                    for (dj = ccs2.items.length - 1; dj >= 0; dj--) {
+                      ccs2.items[dj].load('tag');
+                    }
+                    await context.sync();
+                    for (dj = ccs2.items.length - 1; dj >= 0; dj--) {
+                      var ccd = ccs2.items[dj];
+                      if (!tagFilter || ccd.tag === tagFilter) {
+                        ccd.delete(false);
+                        deleted++;
+                      }
+                    }
+                    await context.sync();
+                    changelog.push(
+                      '✅ 删除 ' + deleted + ' 个内容控件' + (tagFilter ? ' (tag=' + tagFilter + ')' : '')
+                    );
+                    return {
+                      success: true,
+                      action: 'content_control',
+                      data: { changelog: changelog },
+                    };
+                  }
+
+                  var paragraphs = context.document.body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+                  var pidx = data.paragraphIndex != null ? data.paragraphIndex : paragraphs.items.length - 1;
+                  var refp = paragraphs.items[pidx];
+                  if (!refp) {
+                    return {
+                      success: false,
+                      action: 'content_control',
+                      error: '段落 ' + pidx + ' 不存在',
+                    };
+                  }
+                  var cc = refp.insertContentControl();
+                  if (data.tag) {
+                    cc.tag = data.tag;
+                  }
+                  if (data.title) {
+                    cc.title = data.title;
+                  }
+                  if (data.placeholderText) {
+                    cc.placeholderText = data.placeholderText;
+                  }
+                  if (data.appearance) {
+                    cc.appearance = data.appearance;
+                  }
+                  if (data.color) {
+                    cc.color = data.color;
+                  }
+                  cc.cannotEdit = data.cannotEdit || false;
+                  cc.cannotDelete = data.cannotDelete || false;
+                  await context.sync();
+                  changelog.push(
+                    '✅ 插入内容控件: tag=' + (data.tag || '') + ', title=' + (data.title || '')
+                  );
+                  return {
+                    success: true,
+                    action: 'content_control',
+                    data: { changelog: changelog },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'content_control',
+                    error:
+                      '内容控件操作失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            }
+            case 'read_comments':
+              result = await runReadComments();
+              break;
+            case 'save_document':
+              result = await runSaveDocument();
+              break;
+            case 'get_history':
+              result = await Word.run(async function () {
+                return {
+                  success: true,
+                  action: 'get_history',
+                  data: {
+                    totalSteps: operationHistory.length,
+                    history: operationHistory.map(function (op) {
+                      return op.step + '. [' + op.timestamp + '] ' + op.summary;
+                    }),
+                  },
+                };
+              });
+              break;
+            case 'undo_to_step':
+              result = await Word.run(async function (context) {
+                try {
+                  var targetStep =
+                    data.targetStep !== undefined && data.targetStep !== null
+                      ? data.targetStep
+                      : 0;
+                  var currentStep = operationHistory.length;
+
+                  if (targetStep >= currentStep) {
+                    return {
+                      success: true,
+                      action: 'undo_to_step',
+                      data: {
+                        message: '当前已在该状态，无需撤销',
+                        currentStep: currentStep,
+                      },
+                    };
+                  }
+                  if (targetStep < 0) {
+                    return {
+                      success: false,
+                      action: 'undo_to_step',
+                      error: 'targetStep 不能小于 0',
+                    };
+                  }
+
+                  var stepsToUndo = currentStep - targetStep;
+                  for (var i = 0; i < stepsToUndo; i++) {
+                    context.document.undo();
+                  }
+                  await context.sync();
+
+                  operationHistory = operationHistory.slice(0, targetStep);
+
+                  return {
+                    success: true,
+                    action: 'undo_to_step',
+                    data: {
+                      undoneSteps: stepsToUndo,
+                      currentStep: targetStep,
+                      message:
+                        '已撤销 ' + stepsToUndo + ' 步，回退到第 ' + targetStep + ' 步',
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'undo_to_step',
+                    error:
+                      '撤销失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
+            case 'undo_last':
+              result = await Word.run(async function (context) {
+                try {
+                  context.document.undo();
+                  await context.sync();
+                  return {
+                    success: true,
+                    action: 'undo_last',
+                    data: {
+                      method: 'native_undo',
+                      message: '已通过 Word 原生撤销回退上一步操作',
+                    },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'undo_last',
+                    error:
+                      'Word 原生撤销 API 不可用（需要较新版本的 Word 365）。请在 Word 中按 Cmd+Z (Mac) 或 Ctrl+Z (Windows) 手动撤销。',
+                    data: { method: 'fallback_manual', suggestion: 'Cmd+Z' },
+                  };
+                }
+              });
+              if (result && result.success) {
+                operationHistory.pop();
+              }
+              break;
+            case 'multi_undo':
+              result = await Word.run(async function (context) {
+                try {
+                  var steps = data.steps != null ? data.steps : 1;
+                  var actualSteps = Math.min(Math.max(1, Number(steps)), 20);
+                  for (var ui = 0; ui < actualSteps; ui++) {
+                    context.document.undo();
+                  }
+                  await context.sync();
+                  return { success: true, action: 'multi_undo', data: { steps: actualSteps } };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'multi_undo',
+                    error: '撤销失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              if (result && result.success && result.data && result.data.steps != null) {
+                operationHistory = operationHistory.slice(0, -result.data.steps);
+              }
+              break;
+            default:
+              result = {
+                success: false,
+                action: String(action || ''),
+                error: '未知 action: ' + action,
+              };
+          }
+        } catch (err) {
+          result = {
+            success: false,
+            action: String(action || ''),
+            error: err && err.message ? err.message : String(err),
+          };
+          appendLog('执行异常: ' + result.error);
+        }
+
+        if (result && result.success && isMutatingWordAction(action)) {
+          operationHistory.push({
+            step: operationHistory.length + 1,
+            action: data.action,
+            summary: buildSummary(data),
+            timestamp: new Date().toLocaleTimeString('zh-CN'),
+          });
+        }
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: 'word_edit_result',
+              requestId: requestId,
+              result: result,
+            })
+          );
+          appendLog('已返回结果: ' + action);
+        } else {
+          appendLog('无法回传结果：WebSocket 未连接');
+        }
+      }
+
+      function runReadStructure() {
+        return Word.run(async function (context) {
+          const paragraphs = context.document.body.paragraphs;
+          paragraphs.load('items');
+          await context.sync();
+
+          const items = paragraphs.items;
+          for (let i = 0; i < items.length; i++) {
+            items[i].load(['text', 'style', 'isListItem']);
+          }
+          await context.sync();
+
+          const lines = [];
+          for (let i = 0; i < items.length; i++) {
+            const p = items[i];
+            let type = '正文';
+            const style = p.style || '';
+            if (style.indexOf('Heading 1') !== -1 || style.indexOf('标题 1') !== -1) {
+              type = '一级标题';
+            } else if (style.indexOf('Heading 2') !== -1 || style.indexOf('标题 2') !== -1) {
+              type = '二级标题';
+            } else if (style.indexOf('Heading 3') !== -1 || style.indexOf('标题 3') !== -1) {
+              type = '三级标题';
+            } else if (p.isListItem) {
+              type = '列表项';
+            }
+            const text = p.text || '';
+            const preview = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+            lines.push('[' + i + '] 【' + type + '】' + preview);
+          }
+
+          var docSummary = {
+            totalParagraphs: items.length,
+            headings: lines.filter(function (s) {
+              return s.indexOf('标题') >= 0;
+            }).length,
+            listItems: lines.filter(function (s) {
+              return s.indexOf('列表项') >= 0;
+            }).length,
+            tip: '需要查看字体/格式/行距等详细信息请用 read_full_structure',
+          };
+
+          return {
+            success: true,
+            action: 'read_structure',
+            data: {
+              structure: lines.join('\n'),
+              summary: docSummary,
+            },
+          };
+        });
+      }
+
+      function runReadFullStructure() {
+        return Word.run(async function (context) {
+          try {
+            var paragraphs = context.document.body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+
+            var total = paragraphs.items.length;
+            var structure = [];
+            var batchSize = 100;
+            var lineSpacingStats = {
+              explicitLineSpacing: 0,
+              nullOrEmptyLineSpacing: 0,
+              multipleRuleValueApprox2: 0,
+            };
+            var paragraphFormatSamples = [];
+
+            for (var batch = 0; batch < total; batch += batchSize) {
+              var end = Math.min(batch + batchSize, total);
+
+              // 格式字段必须在 paragraphFormat 上 load；写在 Paragraph 上会导致 sync 失败，整批读不到字号
+              for (var i = batch; i < end; i++) {
+                try {
+                  paragraphs.items[i].load('text, style, isListItem, firstLineIndent');
+                  paragraphs.items[i].paragraphFormat.load(
+                    'alignment, lineSpacing, lineSpacingRule, firstLineIndent, spaceBefore, spaceAfter'
+                  );
+                } catch (e) {}
+              }
+              await context.sync();
+
+              for (var j = batch; j < end; j++) {
+                try {
+                  paragraphs.items[j].font.load(
+                    'name, size, bold, italic, color, highlightColor, underline, strikethrough'
+                  );
+                } catch (e) {
+                  try {
+                    paragraphs.items[j].font.load(
+                      'name, size, bold, italic, color, highlightColor, underline'
+                    );
+                  } catch (e2) {}
+                }
+              }
+              await context.sync();
+
+              for (var k = batch; k < end; k++) {
+                var p = paragraphs.items[k];
+                var type = '正文';
+                try {
+                  var style = p.style || '';
+                  if (style.indexOf('Heading 1') >= 0 || style.indexOf('标题 1') >= 0) type = '一级标题';
+                  else if (style.indexOf('Heading 2') >= 0 || style.indexOf('标题 2') >= 0) {
+                    type = '二级标题';
+                  } else if (style.indexOf('Heading 3') >= 0 || style.indexOf('标题 3') >= 0) {
+                    type = '三级标题';
+                  } else if (style.indexOf('Heading') >= 0 || style.indexOf('标题') >= 0) type = '标题';
+                  else if (p.isListItem) type = '列表项';
+                } catch (e) {}
+
+                var fontDesc = '';
+                try {
+                  var f = p.font;
+                  fontDesc = (f.name || '?') + ' ' + (f.size != null ? f.size : '?') + 'pt';
+                  if (f.bold) fontDesc += ' 加粗';
+                  if (f.italic) fontDesc += ' 斜体';
+                  if (f.underline && f.underline !== 'None') fontDesc += ' 下划线';
+                  if (f.strikethrough) fontDesc += ' 删除线';
+                  if (
+                    f.color &&
+                    f.color !== '#000000' &&
+                    f.color !== 'black' &&
+                    String(f.color) !== 'Automatic'
+                  ) {
+                    fontDesc += ' 颜色:' + f.color;
+                  }
+                  if (f.highlightColor && f.highlightColor !== 'None' && f.highlightColor !== null) {
+                    fontDesc += ' 高亮:' + f.highlightColor;
+                  }
+                } catch (e) {
+                  fontDesc = '(格式读取失败)';
+                }
+
+                var formatDesc = '';
+                var pf = null;
+                var hasExplicitLs = false;
+                var lsVal = null;
+                var lrStr = '';
+                try {
+                  pf = p.paragraphFormat;
+                  var alignMap = { 0: '左', 1: '中', 2: '右', 3: '两端' };
+                  var al = pf.alignment;
+                  formatDesc = alignMap[al] != null ? alignMap[al] : '';
+                  if (al != null && formatDesc === '' && typeof al === 'string') {
+                    var als = String(al).toLowerCase();
+                    if (als.indexOf('left') >= 0) formatDesc = '左';
+                    else if (als.indexOf('center') >= 0) formatDesc = '中';
+                    else if (als.indexOf('right') >= 0) formatDesc = '右';
+                    else if (als.indexOf('justif') >= 0) formatDesc = '两端';
+                  }
+                  // Word 常对「仅继承样式」的段落返回 lineSpacing 空值——以前不写进文本，看起来像「没有行距信息」
+                  lsVal = pf.lineSpacing;
+                  var lrVal = pf.lineSpacingRule;
+                  lrStr = '';
+                  try {
+                    lrStr = lrVal != null ? String(lrVal) : '';
+                  } catch (eLr0) {}
+                  hasExplicitLs =
+                    lsVal != null &&
+                    lsVal !== '' &&
+                    !(typeof lsVal === 'number' && isNaN(lsVal));
+                  if (hasExplicitLs) {
+                    lineSpacingStats.explicitLineSpacing++;
+                    var ruleLabel = '';
+                    try {
+                      if (lrStr) {
+                        if (lrStr.indexOf('ultiple') >= 0 || lrStr === 'Multiple') {
+                          ruleLabel = '×多倍';
+                        } else if (lrStr.indexOf('xact') >= 0 || lrStr === 'Exactly') {
+                          ruleLabel = 'pt固定';
+                        } else if (lrStr.indexOf('Least') >= 0 || lrStr === 'AtLeast') {
+                          ruleLabel = 'pt至少';
+                        } else if (lrStr.indexOf('uto') >= 0 || lrStr === 'Auto') {
+                          ruleLabel = '自动';
+                        }
+                      }
+                    } catch (eR) {}
+                    var lsShow = lsVal;
+                    if (lrStr && (lrStr.indexOf('ultiple') >= 0 || lrStr === 'Multiple')) {
+                      var lsNum = Number(lsVal);
+                      if (!isNaN(lsNum) && lsNum >= 6) {
+                        lsShow =
+                          lsVal + '(多倍≈' + wordLineSpacingMultipleToUi(lsVal) + '×)';
+                      }
+                    }
+                    formatDesc += ' 行距' + lsShow + (ruleLabel ? '(' + ruleLabel + ')' : '');
+                    if (
+                      (lrStr.indexOf('ultiple') >= 0 || lrStr === 'Multiple') &&
+                      Math.abs(wordLineSpacingMultipleToUi(lsVal) - 2) < 0.08
+                    ) {
+                      lineSpacingStats.multipleRuleValueApprox2++;
+                    }
+                  } else {
+                    lineSpacingStats.nullOrEmptyLineSpacing++;
+                    formatDesc += ' 行距:—(API空=多继承样式，非「无此字段」)';
+                  }
+                  var fiVal = p.firstLineIndent;
+                  if (fiVal == null || fiVal === '') {
+                    try {
+                      fiVal = pf.firstLineIndent;
+                    } catch (eFi) {}
+                  }
+                  if (fiVal) {
+                    formatDesc += ' 首缩' + Math.round(Number(fiVal)) + 'pt';
+                  }
+                  try {
+                    if (pf.spaceBefore) formatDesc += ' 段前' + Math.round(pf.spaceBefore) + 'pt';
+                  } catch (eS) {}
+                  try {
+                    if (pf.spaceAfter) formatDesc += ' 段后' + Math.round(pf.spaceAfter) + 'pt';
+                  } catch (eS2) {}
+                } catch (e) {}
+
+                if (paragraphFormatSamples.length < 40 && pf) {
+                  try {
+                    paragraphFormatSamples.push({
+                      index: k,
+                      style: p.style || '',
+                      lineSpacing: hasExplicitLs ? lsVal : null,
+                      lineSpacingRule: lrStr || null,
+                      alignment: String(pf.alignment != null ? pf.alignment : ''),
+                      spaceBefore: pf.spaceBefore,
+                      spaceAfter: pf.spaceAfter,
+                    });
+                  } catch (eSp) {}
+                }
+
+                var preview = '';
+                try {
+                  var t = p.text || '';
+                  preview = t.substring(0, 80) + (t.length > 80 ? '...' : '');
+                } catch (e) {}
+
+                structure.push(
+                  '[' +
+                    k +
+                    '] 【' +
+                    type +
+                    '】' +
+                    fontDesc +
+                    (formatDesc ? ' ' + formatDesc : '') +
+                    ' | ' +
+                    preview
+                );
+              }
+            }
+
+            return {
+              success: true,
+              action: 'read_full_structure',
+              data: {
+                totalParagraphs: total,
+                structure: structure.join('\n'),
+                lineSpacingSummary: {
+                  explicitLineSpacingParagraphs: lineSpacingStats.explicitLineSpacing,
+                  nullOrEmptyLineSpacingParagraphs: lineSpacingStats.nullOrEmptyLineSpacing,
+                  multipleRuleValueApprox2Paragraphs: lineSpacingStats.multipleRuleValueApprox2,
+                  note:
+                    'explicit=段落对象上能读到非空 lineSpacing；nullOrEmpty 多表示继承样式（UI 里可能仍是 2 倍但 API 不返回数值）。若整篇 multipleApprox2 远小于 total，说明 2 倍行距多半未写成直接格式或未生效。',
+                },
+                paragraphFormatSamples: paragraphFormatSamples,
+              },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_full_structure',
+              error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runReadPageSetup() {
+        return Word.run(async function (context) {
+          try {
+            var sections = context.document.sections;
+            sections.load('items');
+            await context.sync();
+
+            var result = [];
+            var s;
+            for (s = 0; s < sections.items.length; s++) {
+              sections.items[s].load('headerDistanceFromTop, footerDistanceFromBottom');
+            }
+            await context.sync();
+
+            for (s = 0; s < sections.items.length; s++) {
+              var section = sections.items[s];
+              var entry = { sectionIndex: s };
+              try {
+                entry.headerDistance = section.headerDistanceFromTop;
+              } catch (e) {
+                entry.headerDistance = null;
+              }
+              try {
+                entry.footerDistance = section.footerDistanceFromBottom;
+              } catch (e2) {
+                entry.footerDistance = null;
+              }
+              result.push(entry);
+            }
+
+            try {
+              for (s = 0; s < sections.items.length; s++) {
+                sections.items[s].load(
+                  'topMargin, bottomMargin, leftMargin, rightMargin, pageWidth, pageHeight, orientation'
+                );
+              }
+              await context.sync();
+              for (s = 0; s < sections.items.length; s++) {
+                var sec = sections.items[s];
+                var e = result[s];
+                try {
+                  if (sec.topMargin !== undefined) e.topMargin = sec.topMargin;
+                } catch (e3) {}
+                try {
+                  if (sec.bottomMargin !== undefined) e.bottomMargin = sec.bottomMargin;
+                } catch (e4) {}
+                try {
+                  if (sec.leftMargin !== undefined) e.leftMargin = sec.leftMargin;
+                } catch (e5) {}
+                try {
+                  if (sec.rightMargin !== undefined) e.rightMargin = sec.rightMargin;
+                } catch (e6) {}
+                try {
+                  if (sec.pageWidth !== undefined) e.pageWidth = sec.pageWidth;
+                } catch (e7) {}
+                try {
+                  if (sec.pageHeight !== undefined) e.pageHeight = sec.pageHeight;
+                } catch (e8) {}
+                try {
+                  if (sec.orientation !== undefined) e.orientation = sec.orientation;
+                } catch (e9) {}
+              }
+            } catch (margErr) {}
+
+            var docProperties = context.document.properties;
+            docProperties.load('title, subject, author, keywords, creationDate, lastAuthor, revision');
+            await context.sync();
+
+            var dp = {};
+            try {
+              dp.title = docProperties.title;
+            } catch (e) {
+              dp.title = null;
+            }
+            try {
+              dp.subject = docProperties.subject;
+            } catch (e) {
+              dp.subject = null;
+            }
+            try {
+              dp.author = docProperties.author;
+            } catch (e) {
+              dp.author = null;
+            }
+            try {
+              dp.keywords = docProperties.keywords;
+            } catch (e) {
+              dp.keywords = null;
+            }
+            try {
+              dp.creationDate = docProperties.creationDate;
+            } catch (e) {
+              dp.creationDate = null;
+            }
+            try {
+              dp.lastAuthor = docProperties.lastAuthor;
+            } catch (e) {
+              dp.lastAuthor = null;
+            }
+            try {
+              dp.revision = docProperties.revision;
+            } catch (e) {
+              dp.revision = null;
+            }
+
+            return {
+              success: true,
+              action: 'read_page_setup',
+              data: {
+                sections: result,
+                documentProperties: dp,
+              },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_page_setup',
+              error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runReadHeadersFooters() {
+        return Word.run(async function (context) {
+          try {
+            var sections = context.document.sections;
+            sections.load('items');
+            await context.sync();
+
+            var H = Word.HeaderFooterType || {};
+            var headerTypes = [
+              H.primary != null ? H.primary : 'Primary',
+              H.firstPage != null ? H.firstPage : 'FirstPage',
+              H.evenPages != null ? H.evenPages : 'EvenPages',
+            ];
+            var result = [];
+            var s;
+            var h;
+
+            for (s = 0; s < sections.items.length; s++) {
+              var section = sections.items[s];
+              var sectionData = { sectionIndex: s, headers: {}, footers: {} };
+
+              for (h = 0; h < headerTypes.length; h++) {
+                try {
+                  var header = section.getHeader(headerTypes[h]);
+                  header.body.load('text');
+                  await context.sync();
+                  var ht = '';
+                  try {
+                    ht = header.body.text;
+                  } catch (eT) {
+                    ht = '';
+                  }
+                  if (ht && String(ht).trim()) {
+                    try {
+                      sectionData.headers[String(headerTypes[h])] = String(ht).trim();
+                    } catch (eA) {}
+                  }
+                } catch (e) {}
+              }
+
+              for (h = 0; h < headerTypes.length; h++) {
+                try {
+                  var footer = section.getFooter(headerTypes[h]);
+                  footer.body.load('text');
+                  await context.sync();
+                  var ft = '';
+                  try {
+                    ft = footer.body.text;
+                  } catch (eT2) {
+                    ft = '';
+                  }
+                  if (ft && String(ft).trim()) {
+                    try {
+                      sectionData.footers[String(headerTypes[h])] = String(ft).trim();
+                    } catch (eB) {}
+                  }
+                } catch (e2) {}
+              }
+
+              try {
+                result.push(sectionData);
+              } catch (eP) {}
+            }
+
+            return {
+              success: true,
+              action: 'read_headers_footers',
+              data: result,
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_headers_footers',
+              error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runReadImages() {
+        return Word.run(async function (context) {
+          try {
+            var images = context.document.body.inlinePictures;
+            images.load('items');
+            await context.sync();
+
+            var result = [];
+            var i;
+            for (i = 0; i < images.items.length; i++) {
+              try {
+                images.items[i].load('altTextTitle, altTextDescription, width, height, hyperlink');
+              } catch (e0) {
+                try {
+                  images.items[i].load('altTextTitle, altTextDescription, width, height');
+                } catch (e1) {
+                  images.items[i].load('width, height');
+                }
+              }
+            }
+            await context.sync();
+
+            for (i = 0; i < images.items.length; i++) {
+              var im = images.items[i];
+              var row = { imageIndex: i };
+              try {
+                row.altTitle = im.altTextTitle || '';
+              } catch (e) {
+                row.altTitle = '';
+              }
+              try {
+                row.altDescription = im.altTextDescription || '';
+              } catch (e) {
+                row.altDescription = '';
+              }
+              try {
+                row.width = im.width;
+              } catch (e) {
+                row.width = null;
+              }
+              try {
+                row.height = im.height;
+              } catch (e) {
+                row.height = null;
+              }
+              try {
+                row.hyperlink = im.hyperlink != null ? im.hyperlink : '';
+              } catch (e) {
+                row.hyperlink = '';
+              }
+              result.push(row);
+            }
+
+            return {
+              success: true,
+              action: 'read_images',
+              data: {
+                totalImages: images.items.length,
+                images: result,
+              },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_images',
+              error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runReadDocumentProperties() {
+        return Word.run(async function (context) {
+          try {
+            var props = context.document.properties;
+            props.load(
+              'title, subject, author, keywords, comments, category, manager, company, creationDate, lastAuthor, lastPrintDate, lastSaveTime, revision, template'
+            );
+            await context.sync();
+
+            var customProps = [];
+            try {
+              var custom = props.customProperties;
+              if (custom && typeof custom.load === 'function') {
+                custom.load('items');
+                await context.sync();
+                var ci;
+                for (ci = 0; ci < custom.items.length; ci++) {
+                  custom.items[ci].load('key, value, type');
+                }
+                await context.sync();
+                for (ci = 0; ci < custom.items.length; ci++) {
+                  try {
+                    customProps.push({
+                      key: custom.items[ci].key,
+                      value: custom.items[ci].value,
+                      type: custom.items[ci].type,
+                    });
+                  } catch (eC) {}
+                }
+              }
+            } catch (e) {}
+
+            function safeProp(obj, key) {
+              try {
+                return obj[key];
+              } catch (e) {
+                return null;
+              }
+            }
+
+            return {
+              success: true,
+              action: 'read_document_properties',
+              data: {
+                title: safeProp(props, 'title'),
+                subject: safeProp(props, 'subject'),
+                author: safeProp(props, 'author'),
+                keywords: safeProp(props, 'keywords'),
+                comments: safeProp(props, 'comments'),
+                category: safeProp(props, 'category'),
+                manager: safeProp(props, 'manager'),
+                company: safeProp(props, 'company'),
+                creationDate: safeProp(props, 'creationDate'),
+                lastAuthor: safeProp(props, 'lastAuthor'),
+                lastPrintDate: safeProp(props, 'lastPrintDate'),
+                lastSaveTime: safeProp(props, 'lastSaveTime'),
+                revision: safeProp(props, 'revision'),
+                template: safeProp(props, 'template'),
+                customProperties: customProps,
+              },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_document_properties',
+              error: '读取失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runReadTrackedChanges() {
+        return Word.run(async function (context) {
+          try {
+            var body = context.document.body;
+            var trackedChanges;
+            try {
+              trackedChanges = body.getTrackedChanges();
+            } catch (e0) {
+              return {
+                success: false,
+                action: 'read_tracked_changes',
+                error:
+                  '当前 Word 版本不支持读取修订记录（需要 WordApi 1.6+）。请在 Word 中使用「审阅」标签查看修订。',
+              };
+            }
+            trackedChanges.load('items');
+            await context.sync();
+
+            var ti;
+            for (ti = 0; ti < trackedChanges.items.length; ti++) {
+              try {
+                trackedChanges.items[ti].load('author, authorDisplayName, date, text, type');
+              } catch (eL) {
+                trackedChanges.items[ti].load('text, type');
+              }
+            }
+            await context.sync();
+
+            var result = [];
+            for (ti = 0; ti < trackedChanges.items.length; ti++) {
+              try {
+                var change = trackedChanges.items[ti];
+                var auth = '';
+                try {
+                  auth = change.authorDisplayName || change.author || '';
+                } catch (eA) {
+                  auth = '';
+                }
+                var txt = '';
+                try {
+                  txt = (change.text || '').substring(0, 100);
+                } catch (eT) {
+                  txt = '';
+                }
+                var dt = null;
+                try {
+                  dt = change.date;
+                } catch (eD) {
+                  dt = null;
+                }
+                var typ = null;
+                try {
+                  typ = change.type;
+                } catch (eTy) {
+                  typ = null;
+                }
+                result.push({
+                  index: ti,
+                  author: auth,
+                  date: dt,
+                  text: txt,
+                  type: typ,
+                });
+              } catch (eRow) {
+                result.push({
+                  index: ti,
+                  author: '',
+                  date: null,
+                  text: '(读取失败)',
+                  type: null,
+                });
+              }
+            }
+
+            return {
+              success: true,
+              action: 'read_tracked_changes',
+              data: {
+                totalChanges: trackedChanges.items.length,
+                changes: result,
+              },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'read_tracked_changes',
+              error:
+                '读取修订失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runSetFont(data) {
+        if (data.paragraphIndex === undefined || data.paragraphIndex === null || !data.font) {
+          return Promise.resolve({
+            success: false,
+            action: 'set_font',
+            error: '缺少 paragraphIndex 或 font',
+          });
+        }
+        return Word.run(async function (context) {
+          const p = context.document.body.paragraphs;
+          p.load('items');
+          await context.sync();
+          const target = p.items[data.paragraphIndex];
+          if (!target) {
+            return { success: false, action: 'set_font', error: '段落索引无效' };
+          }
+          const f = data.font;
+          if (f.name) target.font.name = f.name;
+          if (f.size !== undefined && f.size !== null) target.font.size = f.size;
+          if (f.bold !== undefined) target.font.bold = f.bold;
+          if (f.italic !== undefined) target.font.italic = f.italic;
+          if (f.color) target.font.color = f.color;
+          if (f.highlightColor !== undefined && f.highlightColor !== null) {
+            try {
+              target.font.highlightColor = f.highlightColor;
+            } catch (hce) {
+              await context.sync();
+              return {
+                success: true,
+                action: 'set_font',
+                data: {
+                  warnings: ['高亮颜色未应用: ' + (hce && hce.message ? hce.message : String(hce))],
+                },
+              };
+            }
+          }
+          await context.sync();
+          return { success: true, action: 'set_font' };
+        });
+      }
+
+      function runSetParagraphFormat(data) {
+        if (data.paragraphIndex === undefined || data.paragraphIndex === null || !data.format) {
+          return Promise.resolve({
+            success: false,
+            action: 'set_paragraph_format',
+            error: '缺少 paragraphIndex 或 format',
+          });
+        }
+        return Word.run(async function (context) {
+          try {
+            var paragraphs = context.document.body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            var idx = data.paragraphIndex;
+            var target = paragraphs.items[idx];
+            if (!target) {
+              return { success: false, action: 'set_paragraph_format', error: '段落索引无效' };
+            }
+            var fmt = data.format || {};
+            var changelog = [];
+
+            var lineSpacing =
+              fmt.lineSpacing !== undefined && fmt.lineSpacing !== null ? fmt.lineSpacing : data.lineSpacing;
+            var firstLineIndent =
+              fmt.firstLineIndent !== undefined && fmt.firstLineIndent !== null
+                ? fmt.firstLineIndent
+                : data.firstLineIndent;
+            var alignment =
+              fmt.alignment !== undefined && fmt.alignment !== null ? fmt.alignment : data.alignment;
+            var spaceBefore =
+              fmt.spaceBefore !== undefined && fmt.spaceBefore !== null ? fmt.spaceBefore : data.spaceBefore;
+            var spaceAfter =
+              fmt.spaceAfter !== undefined && fmt.spaceAfter !== null ? fmt.spaceAfter : data.spaceAfter;
+            var leftIndent =
+              fmt.leftIndent !== undefined && fmt.leftIndent !== null ? fmt.leftIndent : data.leftIndent;
+            var rightIndent =
+              fmt.rightIndent !== undefined && fmt.rightIndent !== null ? fmt.rightIndent : data.rightIndent;
+
+            var fmtEffective = {
+              lineSpacing: lineSpacing,
+              lineSpacingRule: fmt.lineSpacingRule,
+              firstLineIndent: firstLineIndent,
+              alignment: alignment,
+              spaceBefore: spaceBefore,
+              spaceAfter: spaceAfter,
+              leftIndent: leftIndent,
+              rightIndent: rightIndent,
+            };
+            var alignFail = 0;
+            applyParagraphFormatDirect(target, fmtEffective, function () {
+              alignFail++;
+            });
+            if (alignFail > 0) {
+              changelog.push('⚠️ 对齐可能未应用');
+            }
+
+            if (lineSpacing != null) {
+              changelog.push(
+                '行距: ' +
+                  lineSpacing +
+                  (fmt.lineSpacingRule ? ' rule=' + fmt.lineSpacingRule : '') +
+                  '（多倍行距：传 1.5/2 表示倍数，任务窗格会按 Word OM 自动×12 写入）'
+              );
+            }
+            if (firstLineIndent != null) {
+              changelog.push('首缩: ' + firstLineIndent + 'pt');
+            }
+            if (spaceBefore != null) {
+              changelog.push('段前: ' + spaceBefore + 'pt');
+            }
+            if (spaceAfter != null) {
+              changelog.push('段后: ' + spaceAfter + 'pt');
+            }
+            if (alignment != null) {
+              changelog.push('对齐: ' + alignment);
+            }
+            if (leftIndent != null) {
+              changelog.push('左缩: ' + leftIndent + 'pt');
+            }
+            if (rightIndent != null) {
+              changelog.push('右缩: ' + rightIndent + 'pt');
+            }
+
+            await context.sync();
+            return {
+              success: true,
+              action: 'set_paragraph_format',
+              data: { paragraphIndex: idx, changelog: changelog },
+            };
+          } catch (err) {
+            return {
+              success: false,
+              action: 'set_paragraph_format',
+              error: '设置失败: ' + (err && err.message ? err.message : String(err)),
+            };
+          }
+        });
+      }
+
+      function runApplyStyle(data) {
+        if (
+          data.paragraphIndex === undefined ||
+          data.paragraphIndex === null ||
+          !data.styleName
+        ) {
+          return Promise.resolve({
+            success: false,
+            action: 'apply_style',
+            error: '缺少 paragraphIndex 或 styleName',
+          });
+        }
+        return Word.run(async function (context) {
+          const p = context.document.body.paragraphs;
+          p.load('items');
+          await context.sync();
+          const target = p.items[data.paragraphIndex];
+          if (!target) {
+            return { success: false, action: 'apply_style', error: '段落索引无效' };
+          }
+          target.style = data.styleName;
+          await context.sync();
+          return { success: true, action: 'apply_style' };
+        });
+      }
+
+      function runReadTables() {
+        return Word.run(async function (context) {
+          const tables = context.document.body.tables;
+          tables.load('items');
+          await context.sync();
+          const result = [];
+          for (let t = 0; t < tables.items.length; t++) {
+            try {
+              tables.items[t].load('rowCount, columnCount, headerRowCount, style');
+            } catch (e) {
+              tables.items[t].load('rowCount, columnCount');
+            }
+          }
+          await context.sync();
+          for (let t = 0; t < tables.items.length; t++) {
+            const table = tables.items[t];
+            const preview = [];
+            var maxR = Math.min(table.rowCount, 3);
+            for (var r = 0; r < maxR; r++) {
+              for (var c = 0; c < table.columnCount; c++) {
+                var cell = table.getCell(r, c);
+                cell.body.load('text');
+                cell.body.paragraphs.load('items');
+              }
+            }
+            await context.sync();
+            for (var r = 0; r < maxR; r++) {
+              for (var c = 0; c < table.columnCount; c++) {
+                var cell2 = table.getCell(r, c);
+                var paras = cell2.body.paragraphs;
+                if (paras.items && paras.items.length > 0) {
+                  paras.items[0].font.load('name, size, bold, italic');
+                }
+              }
+            }
+            await context.sync();
+            for (var r2 = 0; r2 < maxR; r2++) {
+              var row = [];
+              for (var c2 = 0; c2 < table.columnCount; c2++) {
+                var cell3 = table.getCell(r2, c2);
+                var text = cell3.body.text || '';
+                var fontSummary = '';
+                var ps = cell3.body.paragraphs;
+                if (ps.items && ps.items.length > 0) {
+                  var fp = ps.items[0].font;
+                  fontSummary =
+                    (fp.name || '?') +
+                    ' ' +
+                    (fp.size != null ? fp.size : '?') +
+                    'pt' +
+                    (fp.bold ? ' 粗' : '') +
+                    (fp.italic ? ' 斜' : '');
+                }
+                row.push({ text: text, font: fontSummary });
+              }
+              preview.push(row);
+            }
+            var row0 = {
+              tableIndex: t,
+              rowCount: table.rowCount,
+              columnCount: table.columnCount,
+              preview: preview,
+            };
+            try {
+              if (table.headerRowCount !== undefined) row0.headerRowCount = table.headerRowCount;
+            } catch (e2) {}
+            try {
+              if (table.style !== undefined) row0.style = table.style;
+            } catch (e3) {}
+            result.push(row0);
+          }
+          return { success: true, action: 'read_tables', data: result };
+        });
+      }
+
+      function runEditTableCell(data) {
+        if (
+          data.tableIndex === undefined ||
+          data.rowIndex === undefined ||
+          data.colIndex === undefined ||
+          data.cellText === undefined
+        ) {
+          return Promise.resolve({
+            success: false,
+            action: 'edit_table_cell',
+            error: '缺少 tableIndex/rowIndex/colIndex/cellText',
+          });
+        }
+        return Word.run(async function (context) {
+          const tables = context.document.body.tables;
+          tables.load('items');
+          await context.sync();
+          const table = tables.items[data.tableIndex];
+          if (!table) {
+            return { success: false, action: 'edit_table_cell', error: '表格索引无效' };
+          }
+          var cell;
+          try {
+            cell = table.getCell(data.rowIndex, data.colIndex);
+          } catch (cellErr) {
+            return {
+              success: false,
+              action: 'edit_table_cell',
+              error:
+                '单元格 (行' +
+                data.rowIndex +
+                ',列' +
+                data.colIndex +
+                ') 无效或越界: ' +
+                (cellErr && cellErr.message ? cellErr.message : String(cellErr)),
+            };
+          }
+          var range = cell.body.getRange();
+          range.clear();
+          cell.body.insertText(data.cellText, Word.InsertLocation.start);
+          await context.sync();
+          return { success: true, action: 'edit_table_cell' };
+        });
+      }
+
+      function runInsertTable(data) {
+        if (!data.tableData || !data.tableData.rows || !data.tableData.cols) {
+          return Promise.resolve({
+            success: false,
+            action: 'insert_table',
+            error: '缺少 tableData.rows/cols',
+          });
+        }
+        return Word.run(async function (context) {
+          const p = context.document.body.paragraphs;
+          p.load('items');
+          await context.sync();
+          var idx =
+            data.paragraphIndex !== undefined && data.paragraphIndex !== null
+              ? data.paragraphIndex
+              : p.items.length - 1;
+          var ref = p.items[idx];
+          if (!ref) {
+            return { success: false, action: 'insert_table', error: '段落索引无效' };
+          }
+          var range = ref.getRange(Word.RangeLocation.after);
+          var td = data.tableData;
+          if (td.values && td.values.length) {
+            range.insertTable(td.rows, td.cols, Word.InsertLocation.after, td.values);
+          } else {
+            range.insertTable(td.rows, td.cols, Word.InsertLocation.after);
+          }
+          await context.sync();
+          return { success: true, action: 'insert_table' };
+        });
+      }
+
+      function runInsertPageBreak(data) {
+        return Word.run(async function (context) {
+          const p = context.document.body.paragraphs;
+          p.load('items');
+          await context.sync();
+          var idx =
+            data.paragraphIndex !== undefined && data.paragraphIndex !== null
+              ? data.paragraphIndex
+              : p.items.length - 1;
+          var ref = p.items[idx];
+          if (!ref) {
+            return { success: false, action: 'insert_page_break', error: '段落索引无效' };
+          }
+          ref.insertBreak(Word.BreakType.page, insertLocationFromPosition(data.position));
+          await context.sync();
+          return { success: true, action: 'insert_page_break' };
+        });
+      }
+
+      function runInsertComment(data) {
+        if (data.paragraphIndex === undefined || data.paragraphIndex === null || !data.text) {
+          return Promise.resolve({
+            success: false,
+            action: 'insert_comment',
+            error: '缺少 paragraphIndex 或 text',
+          });
+        }
+        return Word.run(async function (context) {
+          const p = context.document.body.paragraphs;
+          p.load('items');
+          await context.sync();
+          const target = p.items[data.paragraphIndex];
+          if (!target) {
+            return { success: false, action: 'insert_comment', error: '段落索引无效' };
+          }
+          const range = target.getRange();
+          range.insertComment(data.text);
+          await context.sync();
+          return { success: true, action: 'insert_comment' };
+        });
+      }
+
+      function runReadComments() {
+        return Word.run(async function (context) {
+          try {
+            var body = context.document.body;
+            if (typeof body.getComments !== 'function') {
+              return {
+                success: false,
+                action: 'read_comments',
+                error:
+                  '当前 Word 加载项 API 不支持 comments（需 Word JS API 1.4+，且宿主需支持）',
+              };
+            }
+            var comments = body.getComments();
+            comments.load('items');
+            await context.sync();
+            for (var i = 0; i < comments.items.length; i++) {
+              try {
+                comments.items[i].load(
+                  'authorName, content, creationDate, resolved, authorEmail, plainText'
+                );
+              } catch (e) {
+                comments.items[i].load('authorName, content');
+              }
+            }
+            await context.sync();
+            var out = [];
+            for (var j = 0; j < comments.items.length; j++) {
+              var c = comments.items[j];
+              var item = {
+                author: c.authorName,
+                content: c.content,
+              };
+              try {
+                if (c.creationDate !== undefined) item.creationDate = c.creationDate;
+              } catch (e2) {}
+              try {
+                if (c.resolved !== undefined) item.resolved = c.resolved;
+              } catch (e3) {}
+              try {
+                if (c.authorEmail !== undefined) item.authorEmail = c.authorEmail;
+              } catch (e4) {}
+              try {
+                if (c.plainText !== undefined) item.plainText = c.plainText;
+              } catch (e5) {}
+              out.push(item);
+            }
+            return { success: true, action: 'read_comments', data: out };
+          } catch (e) {
+            return {
+              success: false,
+              action: 'read_comments',
+              error: e && e.message ? e.message : String(e),
+            };
+          }
+        });
+      }
+
+      function runSaveDocument() {
+        return Word.run(async function (context) {
+          context.document.save();
+          await context.sync();
+          return { success: true, action: 'save_document' };
+        });
+      }
+
+      function runGetStatus() {
+        return Word.run(async function (context) {
+          const doc = context.document;
+          doc.load('saved');
+          const body = doc.body;
+          body.load('text');
+          await context.sync();
+
+          return {
+            success: true,
+            action: 'get_status',
+            data: {
+              connected: true,
+              documentLength: (body.text && body.text.length) || 0,
+              isSaved: doc.saved,
+              operationHistory: operationHistory.map(function (op) {
+                return op.step + '. [' + op.timestamp + '] ' + op.summary;
+              }),
+            },
+          };
+        });
+      }
+
+      Office.onReady(function (info) {
+        appendLog('Office 已就绪 (' + (info.host || '') + ')');
+        intentionalClose = false;
+        connect();
+        connectChat();
+      });
+    })();
+  </script>
+</body>
+</html>

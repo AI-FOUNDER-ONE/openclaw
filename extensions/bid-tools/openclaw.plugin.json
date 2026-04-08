@@ -1,0 +1,14 @@
+{
+  "id": "bid-tools",
+  "name": "Bid Tools Plugin",
+  "description": "投标文档自动生成工具集：招标解析、素材检索、合规校验",
+  "skills": [],
+  "contracts": {
+    "tools": ["bid_analyze", "knowledge_query", "bid_validate"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

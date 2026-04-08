@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:type="TaskPaneApp">
+
+  <Id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</Id>
+  <Version>1.0.2</Version>
+  <ProviderName>AI-Lab-Commander</ProviderName>
+  <DefaultLocale>zh-CN</DefaultLocale>
+  <DisplayName DefaultValue="AI-Lab Word Bridge"/>
+  <Description DefaultValue="Word 文档可视化编辑桥接器"/>
+  <SupportUrl DefaultValue="https://127.0.0.1:18801/taskpane.html"/>
+
+  <!-- paragraphFormat 多项属性、pageSetup 等需 1.5+；仍报成功不生效时请升 Word 或看返回 data.warnings -->
+  <Requirements>
+    <Sets DefaultMinVersion="1.5">
+      <Set Name="WordApi" MinVersion="1.5"/>
+    </Sets>
+  </Requirements>
+
+  <AppDomains>
+    <AppDomain>https://127.0.0.1:18801</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://127.0.0.1:18801/taskpane.html"/>
+  </DefaultSettings>
+
+  <Permissions>ReadWriteDocument</Permissions>
+
+</OfficeApp>

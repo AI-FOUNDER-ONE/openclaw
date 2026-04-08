@@ -1,0 +1,14 @@
+{
+  "id": "word-edit",
+  "name": "Word Edit Plugin",
+  "description": "Word 文档可视化编辑插件，通过 WebSocket 中继连接 Word Add-in",
+  "skills": [],
+  "contracts": {
+    "tools": ["word_edit"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
