@@ -72,6 +72,10 @@ export type WordEditAction =
   | "read_selection"
   | "replace_selection"
   | "format_selection"
+  | "audit_document"
+  | "get_heading_outline"
+  | "set_preference"
+  | "manage_template"
   | "edit_paragraphs"
   | "get_status"
   | "set_font"
@@ -91,6 +95,7 @@ export type WordEditAction =
   | "undo_last"
   | "multi_undo"
   | "undo_to_step"
+  | "create_checkpoint"
   | "get_history"
   | "delete_paragraphs"
   | "delete_text"
@@ -114,7 +119,7 @@ export interface WordEditParams {
   format?: ParagraphFormat;
   styleName?: string;
   target?: FormatTarget;
-  operation?: FormatOperation;
+  operation?: FormatOperation | "save" | "list" | "show" | "apply" | "delete" | "scan" | "compare";
   tableIndex?: number;
   rowIndex?: number;
   colIndex?: number;
@@ -132,6 +137,24 @@ export interface WordEditParams {
   steps?: number;
   /** action=undo_to_step 时：回退到第几步（0=初始状态） */
   targetStep?: number;
+  label?: string;
+  checks?: string[];
+  templateName?: string;
+  autoFix?: boolean;
+  /** audit_document：网关注入的用户偏好、模板与摘要（任务窗格侧消费） */
+  auditContext?: {
+    userPrefs?: Record<string, unknown>;
+    templateSpec?: unknown;
+    preferenceSummary?: string;
+    skipCategories?: string[];
+    templateAutoMatched?: boolean;
+    effectiveTemplateName?: string | null;
+  };
+  /** set_preference：偏好键，也可用工具参数里的 key */
+  preferenceKey?: string;
+  preferenceValue?: string | number;
+  preferenceContext?: string;
+  description?: string;
   indices?: number[];
   searchText?: string;
   replaceText?: string;
@@ -197,3 +220,97 @@ export interface WordEditResult {
   changelog?: string[];
   error?: string;
 }
+
+export const CREATE_CHECKPOINT_ACTION_DEFINITION = {
+  name: "create_checkpoint",
+  description:
+    "在执行大批量修改前创建一个会话检查点。如果后续操作失败，可以回滚到此检查点。建议在以下场景使用：修改超过 5 个段落、全文替换、目录更新、批量格式调整。",
+  parameters: {
+    type: "object",
+    properties: {
+      label: {
+        type: "string",
+        description: '检查点标签，描述当前文档状态，如 "TOC更新前" "批量替换前"',
+      },
+    },
+    required: ["label"],
+  },
+} as const;
+
+export const SET_PREFERENCE_ACTION_DEFINITION = {
+  name: "set_preference",
+  description:
+    "记录用户的排版与格式偏好。当用户明确表达喜好时调用（例如「正文用宋体」「标题黑体」「行距 1.5」「小四」）。后续 audit_document 会优先按此偏好审视。",
+  parameters: {
+    type: "object",
+    properties: {
+      preferenceKey: {
+        type: "string",
+        description:
+          "偏好键。常用：body.font、body.fontCN（东亚字体）、body.fontSize（pt）、body.lineSpacing（倍数）、body.firstLineIndent（pt）、h1.fontCN、h1.fontSize、page.topMargin 等",
+      },
+      preferenceValue: {
+        type: ["string", "number"],
+        description: "偏好值",
+      },
+      preferenceContext: {
+        type: "string",
+        description: "用户原话或场景说明，便于日后理解来源",
+      },
+    },
+    required: ["preferenceKey", "preferenceValue"],
+  },
+} as const;
+
+export const AUDIT_DOCUMENT_ACTION_DEFINITION = {
+  name: "audit_document",
+  description:
+    "自动审视整个文档的结构和排版，生成问题报告。会加载已学习的用户偏好，并在未指定模板时按标题结构自动匹配模板库；检查项包括标题层级、空段落、格式一致性、行距/字体/缩进等。可选传入 templateName 作为对照基准。",
+  parameters: {
+    type: "object",
+    properties: {
+      checks: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "要执行的检查项列表。可选值：heading_hierarchy, empty_paragraphs, format_consistency, spacing, font_consistency, indent, toc_match, header_footer, page_break, all。默认 all。",
+      },
+      templateName: {
+        type: "string",
+        description: "可选。用哪个已保存的模板作为格式基准来对照。不传则用通用排版规范检查。",
+      },
+      autoFix: {
+        type: "boolean",
+        description:
+          "是否自动修复发现的问题。false=只报告不修改（默认），true=自动修复可安全修复的问题。",
+      },
+    },
+  },
+} as const;
+
+export const MANAGE_TEMPLATE_ACTION_DEFINITION = {
+  name: "manage_template",
+  description:
+    "管理文档格式模板。可以从当前文档提取格式规范保存为模板，也可以查看/删除已有模板，或将模板应用到当前文档。",
+  parameters: {
+    type: "object",
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["save", "list", "show", "apply", "delete", "scan", "compare"],
+        description:
+          "save=从当前文档提取格式保存, list=列出所有, show=查看详情, apply=应用模板到当前文档, delete=删除, scan=重新扫描模板文件夹, compare=对比当前文档与模板的差异",
+      },
+      templateName: {
+        type: "string",
+        description:
+          'save/show/apply/delete 时必填。模板名称（如"投标书模板"、"技术方案模板"）',
+      },
+      description: {
+        type: "string",
+        description: "save 时可选。模板描述说明。",
+      },
+    },
+    required: ["operation"],
+  },
+} as const;

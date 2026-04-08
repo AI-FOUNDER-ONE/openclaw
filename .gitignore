@@ -144,3 +144,14 @@ changelog/fragments/
 
 # 环境变量（含 API Key，不提交）
 extensions/word-bridge/.env
+.templates.json
+extensions/word-bridge/.templates.json
+extensions/word-bridge/.user-preferences.json
+.user-preferences.json
+
+# Word Bridge local HTTPS certs (mkcert); never commit private keys
+extensions/word-bridge/*.pem
+
+# User-provided Word templates (.gitkeep keeps the directory in repo)
+extensions/word-bridge/templates/*.docx
+extensions/word-edit/templates/*.docx

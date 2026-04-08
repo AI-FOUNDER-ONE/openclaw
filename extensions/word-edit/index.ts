@@ -1,6 +1,6 @@
 import { definePluginEntry, type AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
-import { startRelayServer } from "./relay-server";
-import { executeWordEdit, WordEditToolSchema, WORD_EDIT_DESCRIPTION } from "./tool";
+import { startRelayServer } from "./relay-server.js";
+import { executeWordEdit, WordEditToolSchema, WORD_EDIT_DESCRIPTION } from "./tool.js";
 
 export default definePluginEntry({
   id: "word-edit",

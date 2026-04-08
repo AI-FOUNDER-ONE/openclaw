@@ -17,6 +17,37 @@
     #chatMessages::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
     #chatInput:focus { border-color: #4fc3f7; }
     #sendBtn:hover { background: #1a5276; }
+    /* 底部：快捷按钮纵向排列，少占横向空间，把宽度留给输入框 */
+    .input-area .quick-tools {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+      align-self: flex-end;
+    }
+    .input-area .quick-tools button {
+      width: 28px;
+      height: 28px;
+      min-width: 28px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .input-area .input-row-main {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+    .input-area .chat-input-wrap {
+      flex: 1;
+      min-width: 0;
+    }
     .msg-bubble {
       padding: 8px 12px;
       border-radius: 12px;
@@ -53,6 +84,67 @@
     .msg-typing { color: #4fc3f7; }
     @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
     .cursor-blink { animation: blink 1s infinite; }
+    #agentProgress .step {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 0;
+      color: #444;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    #agentProgress .step.done { color: #0d904f; }
+    #agentProgress .step.active { color: #1a73e8; font-weight: 600; }
+    #agentProgress .step.failed { color: #d93025; text-decoration: line-through; }
+    /* 模板选择浮层 */
+    #templatePickerOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      background: rgba(0, 0, 0, 0.5);
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+    }
+    #templatePickerOverlay.is-open {
+      display: flex;
+    }
+    #templatePickerPanel {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 12px;
+      max-width: 380px;
+      width: 100%;
+      max-height: 72vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+    #templatePickerList .tpl-row {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 10px 12px;
+      margin: 2px 0;
+      border: none;
+      border-radius: 8px;
+      background: #0f3460;
+      color: #e0e0e0;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+      line-height: 1.35;
+    }
+    #templatePickerList .tpl-row:hover {
+      background: #1a5276;
+    }
+    #templatePickerList .tpl-row .tpl-meta {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
@@ -67,6 +159,11 @@
         <span style="font-size:11px; color:#888;">AI</span>
       </div>
       <span style="font-size:11px; color:#666;">AI-Lab Word Bridge</span>
+    </div>
+
+    <div id="agentProgress" style="display:none; background:linear-gradient(135deg,#f0f4ff,#e8f0fe); border-radius:8px; padding:8px 12px; margin:4px 8px; max-height:140px; overflow-y:auto; border:1px solid #d0d9e8; font-size:12px;">
+      <div style="font-weight:600; color:#1a73e8; margin-bottom:4px; font-size:11px;">📋 执行计划</div>
+      <div id="progressSteps"></div>
     </div>
 
     <div id="chatMessages" style="flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px;">
@@ -84,9 +181,55 @@
     </div>
 
     <div id="inputArea" class="input-area" style="border-top:1px solid #2a2a4a; padding:8px 12px; background:#16213e; flex-shrink:0;">
-      <div style="display:flex; align-items:flex-end; gap:6px; width:100%;">
-        <textarea id="chatInput" placeholder="输入消息..." rows="2" style="flex:1; background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#e0e0e0; padding:8px 10px; font-size:13px; font-family:inherit; resize:none; outline:none; line-height:1.4;" onkeydown="handleInputKeydown(event)"></textarea>
-        <button id="sendBtn" onclick="sendChatMessage()" style="background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#4fc3f7; padding:0 12px; cursor:pointer; font-size:16px; flex-shrink:0;" title="发送">↵</button>
+      <div class="input-row-main">
+        <div class="quick-tools" aria-label="快捷操作">
+          <button
+            type="button"
+            id="templateBtn"
+            title="选择模板：按该模板排版并改写当前文档（将发送给 AI）"
+            style="background:#fef3e0; color:#f57c00;"
+            onmouseover="this.style.background='#ffe0b2'"
+            onmouseout="this.style.background='#fef3e0'"
+          >📂</button>
+          <button
+            type="button"
+            id="templateUploadBtn"
+            title="上传模板：从本机任选文件夹中的 .docx 加入模板库"
+            style="background:#e8f5e9; color:#2e7d32;"
+            onmouseover="this.style.background='#c8e6c9'"
+            onmouseout="this.style.background='#e8f5e9'"
+          >📤</button>
+          <input type="file" id="templateUploadInput" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style="display:none" />
+          <button
+            type="button"
+            id="auditBtn"
+            title="文档审视：填入审视请求并发送给 AI"
+            style="background:#e8f0fe; color:#1a73e8;"
+            onmouseover="this.style.background='#d0e1fd'"
+            onmouseout="this.style.background='#e8f0fe'"
+          >📋</button>
+        </div>
+        <div class="chat-input-wrap">
+          <textarea id="chatInput" placeholder="输入消息..." rows="2" style="width:100%; box-sizing:border-box; background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#e0e0e0; padding:8px 10px; font-size:13px; font-family:inherit; resize:none; outline:none; line-height:1.4;" onkeydown="handleInputKeydown(event)"></textarea>
+        </div>
+        <button id="sendBtn" onclick="sendChatMessage()" style="min-width:40px; min-height:44px; align-self:stretch; background:#0f3460; border:1px solid #2a2a4a; border-radius:8px; color:#4fc3f7; padding:0 10px; cursor:pointer; font-size:18px; flex-shrink:0;" title="发送">↵</button>
+      </div>
+    </div>
+
+    <!-- 模板选择：选中后向 Agent 发送按模板排版/改写的指令 -->
+    <div id="templatePickerOverlay" aria-hidden="true">
+      <div id="templatePickerPanel" role="dialog" aria-labelledby="templatePickerTitle" onclick="event.stopPropagation()">
+        <div style="padding:12px 14px; border-bottom:1px solid #2a2a4a;">
+          <div id="templatePickerTitle" style="font-weight:600; font-size:13px; color:#e0e0e0;">选择排版模板</div>
+          <div id="templatePickerHint" style="font-size:11px; color:#888; margin-top:6px; line-height:1.4;">
+            点选模板后，将把任务说明填入输入框并发送给 AI。
+          </div>
+        </div>
+        <div id="templatePickerList" style="overflow-y:auto; flex:1; min-height:72px; padding:8px 10px 12px;"></div>
+        <div style="padding:10px 14px; border-top:1px solid #2a2a4a; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <span id="templatePickerFolderHint" style="font-size:10px; color:#666; flex:1; min-width:0; word-break:break-all;"></span>
+          <button type="button" id="templatePickerClose" style="flex-shrink:0; padding:6px 14px; border-radius:8px; border:1px solid #2a2a4a; background:#0f3460; color:#aaa; cursor:pointer; font-size:12px;">取消</button>
+        </div>
       </div>
     </div>
   </div>
@@ -143,6 +286,104 @@
       var chatInputIsComposing = false;
       var chatInputCompositionEndedAt = 0;
       var AUTH_TOKEN = 'c67d9d2fa104fb16da7484fba08aabd3679d1a9904a627bf';
+      const actionStats = {};
+
+      function recordActionTime(action, durationMs, success) {
+        if (!actionStats[action]) {
+          actionStats[action] = { count: 0, totalMs: 0, avgMs: 0, failures: 0, maxMs: 0 };
+        }
+        const stat = actionStats[action];
+        stat.count++;
+        stat.totalMs += durationMs;
+        stat.avgMs = Math.round(stat.totalMs / stat.count);
+        stat.maxMs = Math.max(stat.maxMs, durationMs);
+        if (!success) stat.failures++;
+      }
+
+      function getStatsReport() {
+        const entries = Object.entries(actionStats).sort(function (a, b) {
+          return b[1].totalMs - a[1].totalMs;
+        });
+        return entries
+          .map(function (entry) {
+            const action = entry[0];
+            const s = entry[1];
+            return (
+              action +
+              ': ' +
+              s.count +
+              '次, 平均' +
+              s.avgMs +
+              'ms, 最大' +
+              s.maxMs +
+              'ms, 失败' +
+              s.failures +
+              '次'
+            );
+          })
+          .join('\n');
+      }
+
+      function handleProgressUpdate(data) {
+        const progressEl = document.getElementById('agentProgress');
+        const stepsEl = document.getElementById('progressSteps');
+        if (!progressEl || !stepsEl) return;
+        let items = [];
+
+        if (data.plan && data.plan.items) {
+          items = data.plan.items;
+        } else if (data.plan && Array.isArray(data.plan)) {
+          items = data.plan;
+        } else if (data.items) {
+          items = data.items;
+        }
+
+        if (!items || items.length === 0) return;
+
+        progressEl.style.display = 'block';
+        stepsEl.innerHTML = items
+          .map(function (item) {
+            const status = item.status || 'pending';
+            const icon =
+              status === 'done'
+                ? '✅'
+                : status === 'in_progress'
+                  ? '⏳'
+                  : status === 'failed'
+                    ? '❌'
+                    : '⬜';
+            const cls =
+              status === 'done'
+                ? 'done'
+                : status === 'in_progress'
+                  ? 'active'
+                  : status === 'failed'
+                    ? 'failed'
+                    : '';
+            return (
+              '<div class="step ' +
+              cls +
+              '">' +
+              icon +
+              ' ' +
+              (item.text || item.description || '') +
+              '</div>'
+            );
+          })
+          .join('');
+
+        const activeStep = stepsEl.querySelector('.active');
+        if (activeStep) activeStep.scrollIntoView({ block: 'nearest' });
+
+        const allDone = items.every(function (i) {
+          return i.status === 'done' || i.status === 'failed';
+        });
+        if (allDone) {
+          setTimeout(function () {
+            progressEl.style.display = 'none';
+          }, 3000);
+        }
+      }
 
       function generateUUID() {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -194,6 +435,63 @@
             frame = JSON.parse(evt.data);
           } catch (e) {
             return;
+          }
+
+          if (
+            frame &&
+            frame.payload &&
+            (frame.payload.type === 'plan_update' ||
+              frame.payload.type === 'execution_item' ||
+              (frame.payload.content &&
+                typeof frame.payload.content === 'string' &&
+                frame.payload.content.includes('update_plan')))
+          ) {
+            handleProgressUpdate(frame.payload);
+          }
+
+          if (
+            frame &&
+            frame.payload &&
+            frame.payload.type === 'tool_call' &&
+            frame.payload.name === 'update_plan' &&
+            frame.payload.arguments
+          ) {
+            try {
+              const planArgs =
+                typeof frame.payload.arguments === 'string'
+                  ? JSON.parse(frame.payload.arguments)
+                  : frame.payload.arguments;
+              handleProgressUpdate({ plan: planArgs });
+            } catch (e) {}
+          }
+
+          if (
+            frame &&
+            frame.payload &&
+            (frame.payload.type === 'tool_result' || frame.payload.type === 'word_action_result')
+          ) {
+            const action = frame.payload.action || frame.payload.name || 'unknown';
+            const duration = frame.payload.duration || (frame.payload.timestamp ? Date.now() - frame.payload.timestamp : 0);
+            const success = frame.payload.success !== false;
+            recordActionTime(action, duration, success);
+          }
+
+          if (frame && frame.payload && frame.payload.type === 'word_action_result') {
+            const data = frame.payload;
+            const logMsg =
+              data.summary +
+              (data.details ? ' | ' + JSON.stringify(data.details).substring(0, 100) : '');
+            addLog(logMsg);
+            const stepsEl = document.getElementById('progressSteps');
+            if (stepsEl) {
+              const activeStep = stepsEl.querySelector('.step.active');
+              if (activeStep) {
+                activeStep.classList.remove('active');
+                activeStep.classList.add(data.success ? 'done' : 'failed');
+                const icon = data.success ? '✅' : '❌';
+                activeStep.innerHTML = activeStep.innerHTML.replace(/^[⬜⏳✅❌]/, icon);
+              }
+            }
           }
 
           if (frame.type === 'event' && frame.event === 'connect.challenge') {
@@ -361,6 +659,37 @@
         var input = document.getElementById('chatInput');
         var text = input.value.trim();
         if (!text) return;
+
+        if (text === '/stats') {
+          input.value = '';
+          input.style.height = 'auto';
+          const report = getStatsReport();
+          addLog('📊 执行统计:\n' + (report || '暂无数据'));
+          return;
+        }
+
+        if (text === '/checkpoints') {
+          input.value = '';
+          input.style.height = 'auto';
+          const cps = (globalThis.__wordCheckpoints || [])
+            .map(function (cp) {
+              return (
+                '[' +
+                cp.timestamp +
+                '] ' +
+                cp.label +
+                ' (段落:' +
+                cp.paragraphCount +
+                ', Undo:' +
+                cp.undoStackSize +
+                ')'
+              );
+            })
+            .join('\n');
+          addLog('🔖 检查点:\n' + (cps || '暂无检查点'));
+          return;
+        }
+
         if (!chatConnected) {
           appendMessage('system', '⚠️ 未连接到 AI，请稍候...');
           return;
@@ -421,6 +750,204 @@
           setTimeout(function () {
             chatInputIsComposing = false;
           }, 0);
+        });
+      })();
+
+      (function initAuditQuickButton() {
+        var auditBtn = document.getElementById('auditBtn');
+        if (!auditBtn) return;
+        auditBtn.addEventListener('click', function () {
+          var chatInput = document.getElementById('chatInput');
+          if (chatInput) {
+            chatInput.value = '请对当前文档进行全面的结构和排版审视，给出问题报告';
+          }
+          var sendBtn = document.getElementById('sendBtn');
+          if (sendBtn) sendBtn.click();
+        });
+      })();
+
+      (function initTemplateUploadButton() {
+        var uploadBtn = document.getElementById('templateUploadBtn');
+        var uploadInput = document.getElementById('templateUploadInput');
+        if (!uploadBtn || !uploadInput) return;
+        uploadBtn.addEventListener('click', function () {
+          uploadInput.click();
+        });
+        uploadInput.addEventListener('change', async function () {
+          var files = uploadInput.files;
+          if (!files || files.length === 0) return;
+          if (typeof window.ensureOperationLogVisible === 'function') {
+            window.ensureOperationLogVisible();
+          }
+          for (var ui = 0; ui < files.length; ui++) {
+            var f = files[ui];
+            var lower = String(f.name || '').toLowerCase();
+            if (!lower.endsWith('.docx')) {
+              addLog('⚠️ 跳过非 .docx: ' + f.name);
+              continue;
+            }
+            try {
+              addLog('📤 正在上传: ' + f.name + ' …');
+              var buf = await f.arrayBuffer();
+              var resp = await fetch('/api/templates/upload', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/octet-stream',
+                  'x-filename': encodeURIComponent(f.name),
+                },
+                body: buf,
+              });
+              var data = {};
+              try {
+                data = await resp.json();
+              } catch (jsonErr) {
+                data = {};
+              }
+              if (resp.ok && data.success) {
+                addLog('✅ ' + (data.message || '已加入模板库'));
+                if (typeof window.__openclawInvalidateTemplatesCache === 'function') {
+                  window.__openclawInvalidateTemplatesCache();
+                }
+              } else {
+                addLog('❌ ' + f.name + ': ' + (data.error || resp.statusText || '上传失败'));
+              }
+            } catch (e) {
+              addLog('❌ ' + f.name + ' 上传异常: ' + (e && e.message ? e.message : String(e)));
+            }
+          }
+          uploadInput.value = '';
+        });
+      })();
+
+      (function initTemplatePicker() {
+        var overlay = document.getElementById('templatePickerOverlay');
+        var listEl = document.getElementById('templatePickerList');
+        var hintEl = document.getElementById('templatePickerHint');
+        var folderHintEl = document.getElementById('templatePickerFolderHint');
+        var closeBtn = document.getElementById('templatePickerClose');
+        var templateBtn = document.getElementById('templateBtn');
+        if (!overlay || !listEl || !hintEl || !templateBtn) return;
+
+        var docKeyHandler = null;
+
+        function closePicker() {
+          overlay.classList.remove('is-open');
+          overlay.setAttribute('aria-hidden', 'true');
+          if (docKeyHandler) {
+            document.removeEventListener('keydown', docKeyHandler);
+            docKeyHandler = null;
+          }
+        }
+
+        function buildTemplateApplyPrompt(templateName) {
+          return (
+            '请按已保存模板「' +
+            templateName +
+            '」对当前 Word 文档进行排版整理与必要改写。\n\n' +
+            '【格式】对照模板「' +
+            templateName +
+            '」统一标题层级以及正文、标题的字体、字号、行距、缩进等。使用 word_edit 时，凡需要 templateName 的参数必须为该名称（与模板库完全一致）：' +
+            JSON.stringify(templateName) +
+            '。\n' +
+            '建议先执行 audit_document（传入相同 templateName，checks 可用 all），根据报告用 apply_format、apply_style、edit_paragraphs 等修复；需要时可使用 autoFix:true。\n\n' +
+            '【改写】若个别段落需改写以符合模板语境或公文表述，在保持事实与数据准确的前提下调整；编辑前务必 read_paragraph_detail 取完整原文，修改后再核对。'
+          );
+        }
+
+        function applyTemplateAndSend(templateName) {
+          closePicker();
+          var chatInput = document.getElementById('chatInput');
+          if (chatInput) {
+            chatInput.value = buildTemplateApplyPrompt(templateName);
+          }
+          addLog('📂 已选择模板「' + templateName + '」，已填入说明并发送给 AI');
+          if (typeof window.ensureOperationLogVisible === 'function') {
+            window.ensureOperationLogVisible();
+          }
+          var sendBtn = document.getElementById('sendBtn');
+          if (sendBtn) {
+            sendBtn.click();
+          }
+        }
+
+        function openPicker() {
+          overlay.classList.add('is-open');
+          overlay.setAttribute('aria-hidden', 'false');
+          listEl.innerHTML = '';
+          hintEl.textContent = '正在加载模板列表…';
+          if (folderHintEl) folderHintEl.textContent = '';
+
+          docKeyHandler = function (e) {
+            if (e.key === 'Escape') {
+              closePicker();
+            }
+          };
+          document.addEventListener('keydown', docKeyHandler);
+
+          fetch('/api/templates')
+            .then(function (r) {
+              return r.json();
+            })
+            .then(function (data) {
+              if (folderHintEl && data && data.folder) {
+                folderHintEl.textContent = '服务端目录：' + data.folder;
+              }
+              if (!data || !Array.isArray(data.templates) || data.templates.length === 0) {
+                hintEl.textContent = '当前没有可用模板';
+                var empty = document.createElement('div');
+                empty.style.cssText = 'font-size:12px;color:#aaa;padding:10px 4px;line-height:1.55;';
+                empty.textContent =
+                  '请先用左侧 📤 从本机任意文件夹选择 .docx 上传至模板库，然后关闭本窗口并再次点击 📂 即可看到列表。';
+                listEl.appendChild(empty);
+                return;
+              }
+              hintEl.textContent = '点选一个模板，将向 AI 发送「按该模板排版并改写」的任务说明：';
+              for (var i = 0; i < data.templates.length; i++) {
+                (function (tpl) {
+                  if (!tpl || !tpl.name) return;
+                  var row = document.createElement('button');
+                  row.type = 'button';
+                  row.className = 'tpl-row';
+                  var title = document.createElement('span');
+                  title.textContent = tpl.name;
+                  var meta = document.createElement('span');
+                  meta.className = 'tpl-meta';
+                  meta.textContent =
+                    (tpl.mainFont || '—') +
+                    (tpl.mainFontCN ? '/' + tpl.mainFontCN : '') +
+                    ' · ' +
+                    (tpl.mainSize || 0) +
+                    'pt · ' +
+                    (tpl.paragraphs || 0) +
+                    '段';
+                  row.appendChild(title);
+                  row.appendChild(meta);
+                  row.addEventListener('click', function () {
+                    applyTemplateAndSend(tpl.name);
+                  });
+                  listEl.appendChild(row);
+                })(data.templates[i]);
+              }
+            })
+            .catch(function () {
+              hintEl.textContent = '加载失败';
+              var err = document.createElement('div');
+              err.style.cssText = 'font-size:12px;color:#e57373;padding:10px 4px;';
+              err.textContent = '无法连接模板服务，请确认 Word Bridge（本机 HTTPS）已启动。';
+              listEl.appendChild(err);
+            });
+        }
+
+        templateBtn.addEventListener('click', function () {
+          openPicker();
+        });
+
+        if (closeBtn) {
+          closeBtn.addEventListener('click', closePicker);
+        }
+
+        overlay.addEventListener('click', function () {
+          closePicker();
         });
       })();
 
@@ -507,19 +1034,30 @@
       }
 
       var logExpanded = false;
+      function setOperationLogExpanded(expanded) {
+        logExpanded = !!expanded;
+        var content = document.getElementById('logContent');
+        var arrow = document.getElementById('logArrow');
+        if (!content || !arrow) return;
+        if (logExpanded) {
+          content.style.maxHeight = '120px';
+          arrow.textContent = '▼';
+        } else {
+          content.style.maxHeight = '0';
+          arrow.textContent = '▲';
+        }
+      }
+      window.ensureOperationLogVisible = function () {
+        setOperationLogExpanded(true);
+        var logList = document.getElementById('logList');
+        if (logList) {
+          logList.scrollTop = logList.scrollHeight;
+        }
+      };
       var logToggleEl = document.getElementById('logToggle');
       if (logToggleEl) {
         logToggleEl.onclick = function () {
-          logExpanded = !logExpanded;
-          var content = document.getElementById('logContent');
-          var arrow = document.getElementById('logArrow');
-          if (logExpanded) {
-            content.style.maxHeight = '120px';
-            arrow.textContent = '▼';
-          } else {
-            content.style.maxHeight = '0';
-            arrow.textContent = '▲';
-          }
+          setOperationLogExpanded(!logExpanded);
         };
       }
 
@@ -1047,6 +1585,928 @@
         await context.sync();
       }
 
+      const TEMPLATE_STORAGE_KEY = '__word_format_templates';
+      let templateStore = {};
+      let templatesLoaded = false;
+
+      window.__openclawInvalidateTemplatesCache = function () {
+        templatesLoaded = false;
+      };
+
+      async function loadTemplatesFromServer() {
+        if (templatesLoaded) return;
+        try {
+          const resp = await fetch('/api/templates');
+          if (resp.ok) {
+            const payload = (await resp.json()) || {};
+            if (payload && Array.isArray(payload.templates)) {
+              templateStore = {};
+              for (var i = 0; i < payload.templates.length; i++) {
+                var name = payload.templates[i].name;
+                if (!name) continue;
+                try {
+                  const d = await fetch('/api/templates/' + encodeURIComponent(name));
+                  if (d.ok) templateStore[name] = await d.json();
+                } catch (detailErr) {}
+              }
+            } else {
+              templateStore = payload || {};
+            }
+            templatesLoaded = true;
+            return;
+          }
+        } catch (e) {}
+        try {
+          var raw = localStorage.getItem(TEMPLATE_STORAGE_KEY);
+          templateStore = raw ? JSON.parse(raw) : {};
+        } catch (e2) {
+          templateStore = {};
+        }
+        templatesLoaded = true;
+      }
+
+      async function saveTemplatesToServer() {
+        try {
+          localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templateStore));
+        } catch (e) {}
+        try {
+          await fetch('/api/templates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(templateStore),
+          });
+        } catch (e2) {
+          console.error('保存模板失败:', e2);
+        }
+      }
+
+      function loadTemplate(name) {
+        return templateStore[name] || null;
+      }
+
+      function getTargetValue(prefKey, templateStyleProp, currentStyle, userPrefs, templateSpec) {
+        if (userPrefs[prefKey] !== undefined && userPrefs[prefKey] !== null) {
+          return { value: userPrefs[prefKey], source: 'user_preference' };
+        }
+        if (templateSpec && templateSpec.styles) {
+          var styleSpec = templateSpec.styles[currentStyle];
+          if (styleSpec && styleSpec[templateStyleProp] !== undefined) {
+            return { value: styleSpec[templateStyleProp], source: 'template' };
+          }
+          var meta = templateSpec.metadata || {};
+          if (templateStyleProp === 'fontName' && meta.mainBodyFont) {
+            return { value: meta.mainBodyFont, source: 'template' };
+          }
+          if (templateStyleProp === 'fontNameEastAsia' && meta.mainBodyFontEastAsia) {
+            return { value: meta.mainBodyFontEastAsia, source: 'template' };
+          }
+          if (templateStyleProp === 'fontSize' && meta.mainBodySize != null) {
+            return { value: meta.mainBodySize, source: 'template' };
+          }
+          if (templateStyleProp === 'lineSpacing' && meta.mainBodyLineSpacing != null) {
+            return { value: meta.mainBodyLineSpacing, source: 'template' };
+          }
+        }
+        return null;
+      }
+
+      async function learnImplicitFormattingFromDocument() {
+        try {
+          await Word.run(async function (context) {
+            var paragraphs = context.document.body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            for (var xi = 0; xi < paragraphs.items.length; xi++) {
+              paragraphs.items[xi].load('text,style,font/name,font/size,lineSpacing');
+            }
+            await context.sync();
+            var fontCounts = {};
+            var sizeCounts = {};
+            var spacingCounts = {};
+            var bodyParaCount = 0;
+            for (var yi = 0; yi < paragraphs.items.length; yi++) {
+              var px = paragraphs.items[yi];
+              var sx = String(px.style || '').toLowerCase();
+              if (sx.indexOf('heading') >= 0 || sx.indexOf('标题') >= 0) continue;
+              if (!String(px.text || '').trim()) continue;
+              bodyParaCount++;
+              if (px.font.name) fontCounts[px.font.name] = (fontCounts[px.font.name] || 0) + 1;
+              if (px.font.size) sizeCounts[px.font.size] = (sizeCounts[px.font.size] || 0) + 1;
+              if (px.lineSpacing) spacingCounts[px.lineSpacing] = (spacingCounts[px.lineSpacing] || 0) + 1;
+            }
+            if (bodyParaCount < 1) return;
+            function topEntry(obj) {
+              var best = null;
+              for (var kk in obj) {
+                if (!best || obj[kk] > best[1]) best = [kk, obj[kk]];
+              }
+              return best;
+            }
+            var topFont = topEntry(fontCounts);
+            var topSize = topEntry(sizeCounts);
+            var topSpacing = topEntry(spacingCounts);
+            function postLearn(key, value) {
+              fetch('/api/preferences/learn', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key, value: value, context: '从文档格式统计推断' }),
+              }).catch(function () {});
+            }
+            if (topFont && topFont[1] / bodyParaCount > 0.7) postLearn('body.font', topFont[0]);
+            if (topSize && topSize[1] / bodyParaCount > 0.7) postLearn('body.fontSize', Number(topSize[0]));
+            if (topSpacing && topSpacing[1] / bodyParaCount > 0.7) {
+              postLearn('body.lineSpacing', Number(topSpacing[0]));
+            }
+          });
+        } catch (eLearn) {}
+      }
+
+      async function runAuditDocument(data) {
+        var checks = data.checks || ['all'];
+        var doAll = checks.indexOf('all') >= 0;
+        var autoFix = data.autoFix === true;
+        var templateName = data.templateName || null;
+        var issues = [];
+        var fixedCount = 0;
+
+        await loadTemplatesFromServer();
+
+        var ac = data.auditContext || {};
+        var userPrefs = ac.userPrefs && typeof ac.userPrefs === 'object' ? ac.userPrefs : {};
+        var preferenceSummary = typeof ac.preferenceSummary === 'string' ? ac.preferenceSummary : '';
+        var skipCategories = Array.isArray(ac.skipCategories) ? ac.skipCategories : [];
+        var templateAutoMatched = !!ac.templateAutoMatched;
+
+        var templateSpec = null;
+        if (ac.templateSpec && typeof ac.templateSpec === 'object') {
+          templateSpec = ac.templateSpec;
+        } else if (templateName) {
+          templateSpec = loadTemplate(templateName);
+        }
+
+        var hasLayeredSource = Object.keys(userPrefs).length > 0 || templateSpec !== null;
+
+        function skipCat(cat) {
+          return skipCategories.indexOf(cat) >= 0;
+        }
+
+        var report = await Word.run(async function (context) {
+          const body = context.document.body;
+          const paragraphs = body.paragraphs;
+          paragraphs.load('items');
+          await context.sync();
+
+          for (var lp = 0; lp < paragraphs.items.length; lp++) {
+            var p0 = paragraphs.items[lp];
+            p0.load(
+              'text,style,alignment,lineSpacing,lineSpacingRule,spaceAfter,spaceBefore,firstLineIndent,leftIndent,rightIndent,outlineLevel,font/name,font/size,font/bold,font/color,isListItem'
+            );
+          }
+          await context.sync();
+
+          var items = paragraphs.items;
+
+          if (
+            hasLayeredSource &&
+            (doAll ||
+              checks.indexOf('font_consistency') >= 0 ||
+              checks.indexOf('spacing') >= 0 ||
+              checks.indexOf('indent') >= 0)
+          ) {
+            for (var layeredIdx = 0; layeredIdx < items.length; layeredIdx++) {
+              var lpar = items[layeredIdx];
+              var lstyle = String(lpar.style || '').toLowerCase();
+              var lHeading = lstyle.indexOf('heading') >= 0 || lstyle.indexOf('标题') >= 0;
+              var ltext0 = String(lpar.text || '').trim();
+              if (lHeading || !ltext0) continue;
+
+              var tgtFont =
+                getTargetValue('body.font', 'fontName', lstyle, userPrefs, templateSpec) ||
+                getTargetValue('body.fontCN', 'fontNameEastAsia', lstyle, userPrefs, templateSpec);
+              if (
+                tgtFont &&
+                !skipCat('font') &&
+                lpar.font.name &&
+                String(lpar.font.name) !== String(tgtFont.value)
+              ) {
+                var srcLabel = tgtFont.source === 'user_preference' ? '您的偏好' : '模板规范';
+                issues.push({
+                  severity: 'warning',
+                  category: 'font',
+                  location: '段落 ' + (layeredIdx + 1),
+                  description:
+                    '字体 "' +
+                    lpar.font.name +
+                    '" 不符合' +
+                    srcLabel +
+                    ' "' +
+                    tgtFont.value +
+                    '"',
+                  suggestion: '改为 "' + tgtFont.value + '"',
+                  autoFixable: true,
+                  basedOn: tgtFont.source,
+                });
+                if (autoFix) {
+                  lpar.font.name = tgtFont.value;
+                  fixedCount++;
+                }
+              }
+
+              var tgtSize = getTargetValue('body.fontSize', 'fontSize', lstyle, userPrefs, templateSpec);
+              if (
+                tgtSize &&
+                !skipCat('fontSize') &&
+                lpar.font.size &&
+                Math.abs(lpar.font.size - Number(tgtSize.value)) > 0.5
+              ) {
+                var srcSz = tgtSize.source === 'user_preference' ? '您的偏好' : '模板规范';
+                issues.push({
+                  severity: 'warning',
+                  category: 'fontSize',
+                  location: '段落 ' + (layeredIdx + 1),
+                  description:
+                    '字号 ' + lpar.font.size + 'pt 不符合' + srcSz + ' ' + tgtSize.value + 'pt',
+                  suggestion: '改为 ' + tgtSize.value + 'pt',
+                  autoFixable: true,
+                  basedOn: tgtSize.source,
+                });
+                if (autoFix) {
+                  lpar.font.size = Number(tgtSize.value);
+                  fixedCount++;
+                }
+              }
+
+              var tgtSp = getTargetValue(
+                'body.lineSpacing',
+                'lineSpacing',
+                lstyle,
+                userPrefs,
+                templateSpec
+              );
+              if (
+                tgtSp &&
+                !skipCat('lineSpacing') &&
+                lpar.lineSpacing != null &&
+                Math.abs(Number(lpar.lineSpacing) - Number(tgtSp.value)) > 0.05
+              ) {
+                var srcSp = tgtSp.source === 'user_preference' ? '您的偏好' : '模板规范';
+                issues.push({
+                  severity: 'info',
+                  category: 'lineSpacing',
+                  location: '段落 ' + (layeredIdx + 1),
+                  description:
+                    '行距 ' + lpar.lineSpacing + ' 不符合' + srcSp + ' ' + tgtSp.value,
+                  suggestion: '改为 ' + tgtSp.value,
+                  autoFixable: true,
+                  basedOn: tgtSp.source,
+                });
+                if (autoFix) {
+                  lpar.lineSpacing = Number(tgtSp.value);
+                  fixedCount++;
+                }
+              }
+
+              var tgtInd = getTargetValue(
+                'body.firstLineIndent',
+                'firstLineIndent',
+                lstyle,
+                userPrefs,
+                templateSpec
+              );
+              if (
+                tgtInd &&
+                !skipCat('indent') &&
+                lpar.firstLineIndent !== undefined &&
+                Math.abs(Number(lpar.firstLineIndent) - Number(tgtInd.value)) > 1
+              ) {
+                issues.push({
+                  severity: 'info',
+                  category: 'indent',
+                  location: '段落 ' + (layeredIdx + 1),
+                  description:
+                    '首行缩进 ' +
+                    lpar.firstLineIndent +
+                    'pt 不符合规范 ' +
+                    tgtInd.value +
+                    'pt',
+                  suggestion: '改为 ' + tgtInd.value + 'pt',
+                  autoFixable: true,
+                  basedOn: tgtInd.source,
+                });
+                if (autoFix) {
+                  lpar.firstLineIndent = Number(tgtInd.value);
+                  fixedCount++;
+                }
+              }
+            }
+          }
+
+          if (doAll || checks.indexOf('heading_hierarchy') >= 0) {
+            var lastHeadingLevel = 0;
+            for (var i = 0; i < items.length; i++) {
+              var p = items[i];
+              var style = String(p.style || '').toLowerCase();
+              var level = 0;
+              if (style.indexOf('heading 1') >= 0 || style.indexOf('标题 1') >= 0) level = 1;
+              else if (style.indexOf('heading 2') >= 0 || style.indexOf('标题 2') >= 0) level = 2;
+              else if (style.indexOf('heading 3') >= 0 || style.indexOf('标题 3') >= 0) level = 3;
+              else if (style.indexOf('heading 4') >= 0 || style.indexOf('标题 4') >= 0) level = 4;
+
+              if (level > 0) {
+                if (lastHeadingLevel > 0 && level > lastHeadingLevel + 1) {
+                  issues.push({
+                    severity: 'warning',
+                    category: 'heading_hierarchy',
+                    location: '段落 ' + (i + 1) + ': "' + String(p.text || '').substring(0, 30) + '..."',
+                    description: '标题层级跳跃：从 H' + lastHeadingLevel + ' 直接到 H' + level,
+                    suggestion: '应该有 H' + (lastHeadingLevel + 1) + ' 级标题过渡，或将此标题改为 H' + (lastHeadingLevel + 1),
+                    autoFixable: false,
+                    basedOn: 'general_rule',
+                  });
+                }
+                if (String(p.text || '').trim() === '') {
+                  issues.push({
+                    severity: 'error',
+                    category: 'heading_hierarchy',
+                    location: '段落 ' + (i + 1),
+                    description: '空标题（H' + level + '级）',
+                    suggestion: '删除空标题或填入内容',
+                    autoFixable: true,
+                    basedOn: 'general_rule',
+                  });
+                  if (autoFix) {
+                    p.delete();
+                    fixedCount++;
+                  }
+                }
+                lastHeadingLevel = level;
+              }
+            }
+          }
+
+          if (doAll || checks.indexOf('empty_paragraphs') >= 0) {
+            var consecutiveEmpty = 0;
+            for (var ei = 0; ei < items.length; ei++) {
+              var text = String(items[ei].text || '').trim();
+              if (text === '') {
+                consecutiveEmpty++;
+                if (consecutiveEmpty >= 2) {
+                  issues.push({
+                    severity: 'warning',
+                    category: 'empty_paragraphs',
+                    location: '段落 ' + (ei + 1),
+                    description: '连续第 ' + consecutiveEmpty + ' 个空段落',
+                    suggestion: '删除多余空段落，用段前/段后间距控制留白',
+                    autoFixable: true,
+                    basedOn: 'general_rule',
+                  });
+                  if (autoFix && consecutiveEmpty > 2) {
+                    items[ei].delete();
+                    fixedCount++;
+                  }
+                }
+              } else {
+                consecutiveEmpty = 0;
+              }
+            }
+          }
+
+          if (doAll || checks.indexOf('format_consistency') >= 0) {
+            var headingFormats = {};
+            for (var fi = 0; fi < items.length; fi++) {
+              var pf = items[fi];
+              var fs = String(pf.style || '').toLowerCase();
+              var fl = 0;
+              if (fs.indexOf('heading 1') >= 0 || fs.indexOf('标题 1') >= 0) fl = 1;
+              else if (fs.indexOf('heading 2') >= 0 || fs.indexOf('标题 2') >= 0) fl = 2;
+              else if (fs.indexOf('heading 3') >= 0 || fs.indexOf('标题 3') >= 0) fl = 3;
+              if (fl > 0) {
+                if (!headingFormats[fl]) headingFormats[fl] = [];
+                headingFormats[fl].push({
+                  index: fi,
+                  font: pf.font.name || '',
+                  size: pf.font.size || 0,
+                  bold: pf.font.bold || false,
+                });
+              }
+            }
+            Object.keys(headingFormats).forEach(function (k) {
+              var arr = headingFormats[k];
+              if (!arr || arr.length < 2) return;
+              var baseline = arr[0];
+              for (var aj = 1; aj < arr.length; aj++) {
+                var cur = arr[aj];
+                if (
+                  cur.font !== baseline.font ||
+                  cur.size !== baseline.size ||
+                  cur.bold !== baseline.bold
+                ) {
+                  issues.push({
+                    severity: 'warning',
+                    category: 'format_consistency',
+                    location: '段落 ' + (cur.index + 1) + '（H' + k + '）',
+                    description:
+                      'H' +
+                      k +
+                      ' 标题格式不一致：' +
+                      cur.font +
+                      '/' +
+                      cur.size +
+                      'pt/' +
+                      (cur.bold ? '粗体' : '非粗体') +
+                      ' vs 基准 ' +
+                      baseline.font +
+                      '/' +
+                      baseline.size +
+                      'pt/' +
+                      (baseline.bold ? '粗体' : '非粗体'),
+                    suggestion:
+                      '统一为 ' + baseline.font + ' ' + baseline.size + 'pt ' + (baseline.bold ? '粗体' : ''),
+                    autoFixable: true,
+                    basedOn: 'general_rule',
+                  });
+                  if (autoFix) {
+                    items[cur.index].font.name = baseline.font;
+                    items[cur.index].font.size = baseline.size;
+                    items[cur.index].font.bold = baseline.bold;
+                    fixedCount++;
+                  }
+                }
+              }
+            });
+          }
+
+          if ((doAll || checks.indexOf('spacing') >= 0) && !hasLayeredSource) {
+            var bodySpacings = [];
+            for (var si = 0; si < items.length; si++) {
+              var ps = items[si];
+              var ss = String(ps.style || '').toLowerCase();
+              var isHeading = ss.indexOf('heading') >= 0 || ss.indexOf('标题') >= 0;
+              if (!isHeading && String(ps.text || '').trim() !== '') {
+                bodySpacings.push({
+                  index: si,
+                  spacing: ps.lineSpacing || 0,
+                  rule: String(ps.lineSpacingRule || ''),
+                });
+              }
+            }
+            if (bodySpacings.length > 3) {
+              var counts = {};
+              for (var ci = 0; ci < bodySpacings.length; ci++) {
+                var key = bodySpacings[ci].spacing + '_' + bodySpacings[ci].rule;
+                counts[key] = (counts[key] || 0) + 1;
+              }
+              var mostCommon = Object.entries(counts).sort(function (a, b) {
+                return b[1] - a[1];
+              })[0];
+              if (mostCommon) {
+                var parts = String(mostCommon[0]).split('_');
+                var baseSpacing = parts[0];
+                var baseRule = parts[1] || '';
+                for (var bi = 0; bi < bodySpacings.length; bi++) {
+                  var bs = bodySpacings[bi];
+                  if (bs.spacing + '_' + bs.rule !== mostCommon[0]) {
+                    issues.push({
+                      severity: 'info',
+                      category: 'spacing',
+                      location: '段落 ' + (bs.index + 1),
+                      description:
+                        '行距异常：' +
+                        bs.spacing +
+                        '(' +
+                        bs.rule +
+                        ') vs 全文基准 ' +
+                        baseSpacing +
+                        '(' +
+                        baseRule +
+                        ')',
+                      suggestion: '建议统一为 ' + baseSpacing + ' ' + baseRule,
+                      autoFixable: true,
+                      basedOn: 'general_rule',
+                    });
+                    if (autoFix) {
+                      items[bs.index].lineSpacing = parseFloat(baseSpacing);
+                      items[bs.index].lineSpacingRule = baseRule;
+                      fixedCount++;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if ((doAll || checks.indexOf('font_consistency') >= 0) && !hasLayeredSource) {
+            var bodyFonts = {};
+            for (var ffi = 0; ffi < items.length; ffi++) {
+              var pp = items[ffi];
+              var st = String(pp.style || '').toLowerCase();
+              var ih = st.indexOf('heading') >= 0 || st.indexOf('标题') >= 0;
+              if (!ih && String(pp.text || '').trim() !== '') {
+                var fk = pp.font.name || 'unknown';
+                bodyFonts[fk] = (bodyFonts[fk] || 0) + 1;
+              }
+            }
+            var fontEntries = Object.entries(bodyFonts).sort(function (a, b) {
+              return b[1] - a[1];
+            });
+            if (fontEntries.length > 1) {
+              var mainFont = fontEntries[0][0];
+              for (var fj = 1; fj < fontEntries.length; fj++) {
+                if (fontEntries[fj][1] <= 2) continue;
+                issues.push({
+                  severity: 'warning',
+                  category: 'font_consistency',
+                  location: fontEntries[fj][1] + ' 个段落',
+                  description:
+                    '使用了非主要字体 "' + fontEntries[fj][0] + '"（主字体为 "' + mainFont + '"）',
+                  suggestion: '统一为 "' + mainFont + '"',
+                  autoFixable: true,
+                  basedOn: 'general_rule',
+                });
+              }
+            }
+          }
+
+          if (doAll || checks.indexOf('indent') >= 0) {
+            for (var ii = 0; ii < items.length; ii++) {
+              var pi = items[ii];
+              var sty = String(pi.style || '').toLowerCase();
+              var isHd = sty.indexOf('heading') >= 0 || sty.indexOf('标题') >= 0;
+              if (!isHd && String(pi.text || '').trim() !== '' && (pi.firstLineIndent || 0) < 0) {
+                issues.push({
+                  severity: 'warning',
+                  category: 'indent',
+                  location: '段落 ' + (ii + 1),
+                  description: '首行缩进为负值 (' + pi.firstLineIndent + 'pt)，可能是悬挂缩进错误',
+                  suggestion: '检查是否应为首行缩进 2 字符',
+                  autoFixable: false,
+                  basedOn: 'general_rule',
+                });
+              }
+            }
+          }
+
+          if (templateSpec) {
+            for (var ti = 0; ti < items.length; ti++) {
+              var pt = items[ti];
+              var styleLower = String(pt.style || '').toLowerCase();
+              var isHeadingTpl = styleLower.indexOf('heading') >= 0 || styleLower.indexOf('标题') >= 0;
+              if (hasLayeredSource && !isHeadingTpl) continue;
+              var spec = templateSpec.styles && templateSpec.styles[styleLower];
+              if (!spec) continue;
+              if (spec.fontSize && pt.font.size !== spec.fontSize) {
+                issues.push({
+                  severity: 'error',
+                  category: 'template_mismatch',
+                  location: '段落 ' + (ti + 1) + ' (' + styleLower + ')',
+                  description: '字号 ' + pt.font.size + 'pt 不符合模板规范 ' + spec.fontSize + 'pt',
+                  suggestion: '改为 ' + spec.fontSize + 'pt',
+                  autoFixable: true,
+                  basedOn: 'template',
+                });
+                if (autoFix) {
+                  pt.font.size = spec.fontSize;
+                  fixedCount++;
+                }
+              }
+              if (spec.fontName && pt.font.name !== spec.fontName) {
+                issues.push({
+                  severity: 'error',
+                  category: 'template_mismatch',
+                  location: '段落 ' + (ti + 1) + ' (' + styleLower + ')',
+                  description:
+                    '字体 "' + pt.font.name + '" 不符合模板规范 "' + spec.fontName + '"',
+                  suggestion: '改为 "' + spec.fontName + '"',
+                  autoFixable: true,
+                  basedOn: 'template',
+                });
+                if (autoFix) {
+                  pt.font.name = spec.fontName;
+                  fixedCount++;
+                }
+              }
+              if (spec.lineSpacing && pt.lineSpacing !== spec.lineSpacing) {
+                issues.push({
+                  severity: 'warning',
+                  category: 'template_mismatch',
+                  location: '段落 ' + (ti + 1) + ' (' + styleLower + ')',
+                  description: '行距 ' + pt.lineSpacing + ' 不符合模板规范 ' + spec.lineSpacing,
+                  suggestion: '改为 ' + spec.lineSpacing,
+                  autoFixable: true,
+                  basedOn: 'template',
+                });
+                if (autoFix) {
+                  pt.lineSpacing = spec.lineSpacing;
+                  fixedCount++;
+                }
+              }
+            }
+          }
+
+          await context.sync();
+
+          var report = {
+            success: true,
+            totalIssues: issues.length,
+            byCategory: {},
+            bySeverity: { error: 0, warning: 0, info: 0 },
+            autoFixed: autoFix ? fixedCount : 0,
+            issues: issues,
+            summary: '',
+          };
+          for (var ri = 0; ri < issues.length; ri++) {
+            var issue = issues[ri];
+            report.bySeverity[issue.severity] = (report.bySeverity[issue.severity] || 0) + 1;
+            report.byCategory[issue.category] = (report.byCategory[issue.category] || 0) + 1;
+          }
+          report.summary =
+            issues.length === 0
+              ? '✅ 文档排版检查通过，未发现问题。'
+              : '发现 ' +
+                issues.length +
+                ' 个问题：' +
+                report.bySeverity.error +
+                ' 个错误、' +
+                report.bySeverity.warning +
+                ' 个警告、' +
+                report.bySeverity.info +
+                ' 个建议。' +
+                (autoFix
+                  ? ' 已自动修复 ' + fixedCount + ' 项。'
+                  : ' 使用 autoFix:true 可自动修复标记为 autoFixable 的问题。');
+          report.templateUsed =
+            templateName || (templateSpec && templateSpec.name) || '无（通用规范）';
+          report.templateAutoMatched = templateAutoMatched;
+          report.userPreferencesApplied = Object.keys(userPrefs).length;
+          report.preferenceSummary = preferenceSummary;
+          report.bySource = { user_preference: 0, template: 0, general_rule: 0 };
+          for (var si = 0; si < issues.length; si++) {
+            var bo = issues[si].basedOn || 'general_rule';
+            if (report.bySource[bo] !== undefined) report.bySource[bo]++;
+          }
+          return report;
+        });
+        learnImplicitFormattingFromDocument();
+        return report;
+      }
+
+      async function runManageTemplate(data) {
+        await loadTemplatesFromServer();
+        var op = data.operation;
+        var tplName = data.templateName;
+
+        if (op === 'list') {
+          try {
+            var listResp = await fetch('/api/templates');
+            if (listResp.ok) {
+              var listData = await listResp.json();
+              return {
+                success: true,
+                templates: listData.templates || [],
+                count: listData.count || 0,
+                folder: listData.folder || '',
+              };
+            }
+          } catch (eList) {}
+          var fallbackList = Object.entries(templateStore).map(function (entry) {
+            var name = entry[0];
+            var tpl = entry[1];
+            return {
+              name: name,
+              description: tpl.description,
+              createdAt: tpl.createdAt,
+              documentName: tpl.documentName,
+              mainFont: tpl.metadata && tpl.metadata.mainBodyFont,
+              mainSize: tpl.metadata && tpl.metadata.mainBodySize,
+              headings: tpl.metadata && tpl.metadata.headingCount,
+            };
+          });
+          return { success: true, templates: fallbackList, count: fallbackList.length };
+        }
+
+        if (op === 'show') {
+          if (!tplName) return { success: false, error: '❌ 请指定模板名称' };
+          var tpl = templateStore[tplName];
+          if (!tpl) return { success: false, error: '❌ 模板 "' + tplName + '" 不存在' };
+          return { success: true, template: tpl };
+        }
+
+        if (op === 'save') {
+          if (!tplName) return { success: false, error: '❌ 请指定模板名称' };
+          var template = {
+            name: tplName,
+            description: data.description || '',
+            createdAt: new Date().toISOString(),
+            documentName: '',
+            styles: {},
+            metadata: { totalParagraphs: 0, headingCount: {}, mainBodyFont: '', mainBodySize: 0 },
+          };
+
+          await Word.run(async function (context) {
+            var props = context.document.properties;
+            props.load('title');
+            var body = context.document.body;
+            var paragraphs = body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+
+            template.documentName = props.title || '未命名文档';
+            template.metadata.totalParagraphs = paragraphs.items.length;
+
+            var styleMap = {};
+            var bodyFonts = {};
+            var bodySizes = {};
+            for (var i = 0; i < paragraphs.items.length; i++) {
+              paragraphs.items[i].load(
+                'text,style,alignment,lineSpacing,lineSpacingRule,spaceAfter,spaceBefore,firstLineIndent,leftIndent,rightIndent,font/name,font/size,font/bold,font/italic,font/color'
+              );
+            }
+            await context.sync();
+
+            for (var j = 0; j < paragraphs.items.length; j++) {
+              var p = paragraphs.items[j];
+              var styleName = String(p.style || 'Normal').toLowerCase();
+              if (styleName.indexOf('heading') >= 0 || styleName.indexOf('标题') >= 0) {
+                template.metadata.headingCount[styleName] =
+                  (template.metadata.headingCount[styleName] || 0) + 1;
+              }
+              if (!styleMap[styleName]) {
+                styleMap[styleName] = true;
+                template.styles[styleName] = {
+                  fontName: p.font.name || undefined,
+                  fontSize: p.font.size || undefined,
+                  bold: p.font.bold || undefined,
+                  italic: p.font.italic || undefined,
+                  alignment: p.alignment || undefined,
+                  lineSpacing: p.lineSpacing || undefined,
+                  lineSpacingRule: p.lineSpacingRule || undefined,
+                  spaceAfter: p.spaceAfter || undefined,
+                  spaceBefore: p.spaceBefore || undefined,
+                  firstLineIndent: p.firstLineIndent || undefined,
+                  leftIndent: p.leftIndent || undefined,
+                  color: p.font.color || undefined,
+                };
+              }
+              if (
+                styleName.indexOf('heading') < 0 &&
+                styleName.indexOf('标题') < 0 &&
+                String(p.text || '').trim()
+              ) {
+                var fKey = p.font.name || 'unknown';
+                var sKey = String(p.font.size || 0);
+                bodyFonts[fKey] = (bodyFonts[fKey] || 0) + 1;
+                bodySizes[sKey] = (bodySizes[sKey] || 0) + 1;
+              }
+            }
+
+            var sections = context.document.sections;
+            sections.load('items');
+            await context.sync();
+            if (sections.items.length > 0) {
+              var sec = sections.items[0];
+              sec.load(
+                'pageSetup/topMargin,pageSetup/bottomMargin,pageSetup/leftMargin,pageSetup/rightMargin,pageSetup/paperSize'
+              );
+              await context.sync();
+              template.pageSetup = {
+                paperSize: String(sec.pageSetup.paperSize || ''),
+                topMargin: sec.pageSetup.topMargin,
+                bottomMargin: sec.pageSetup.bottomMargin,
+                leftMargin: sec.pageSetup.leftMargin,
+                rightMargin: sec.pageSetup.rightMargin,
+              };
+            }
+
+            var topFont = Object.entries(bodyFonts).sort(function (a, b) {
+              return b[1] - a[1];
+            })[0];
+            var topSize = Object.entries(bodySizes).sort(function (a, b) {
+              return b[1] - a[1];
+            })[0];
+            template.metadata.mainBodyFont = topFont ? topFont[0] : '';
+            template.metadata.mainBodySize = topSize ? Number(topSize[0]) : 0;
+          });
+
+          templateStore[tplName] = template;
+          await saveTemplatesToServer();
+          return {
+            success: true,
+            message: '模板 "' + tplName + '" 已保存',
+            template: {
+              name: tplName,
+              styles: Object.keys(template.styles).length + ' 种样式',
+              mainFont: template.metadata.mainBodyFont,
+              mainSize: template.metadata.mainBodySize,
+              headings: template.metadata.headingCount,
+            },
+          };
+        }
+
+        if (op === 'apply') {
+          if (!tplName) return { success: false, error: '❌ 请指定模板名称' };
+          var applyTpl = templateStore[tplName];
+          if (!applyTpl) return { success: false, error: '❌ 模板 "' + tplName + '" 不存在' };
+          return {
+            success: true,
+            message:
+              '请使用 audit_document 并传入 templateName:"' +
+              tplName +
+              '" 和 autoFix:true 来应用模板格式',
+          };
+        }
+
+        if (op === 'scan') {
+          try {
+            const resp = await fetch('/api/templates/scan', { method: 'POST' });
+            const result = await resp.json();
+            templatesLoaded = false;
+            await loadTemplatesFromServer();
+            return result;
+          } catch (scanErr) {
+            return { success: false, error: '❌ 重新扫描失败' };
+          }
+        }
+
+        if (op === 'compare') {
+          if (!tplName) return { success: false, error: '❌ 请指定模板名称' };
+          var detailResp = await fetch('/api/templates/' + encodeURIComponent(tplName));
+          if (!detailResp.ok) return { success: false, error: '❌ 模板 "' + tplName + '" 不存在' };
+          var tplDetail = await detailResp.json();
+          var diffs = [];
+          await Word.run(async function (context) {
+            const body = context.document.body;
+            const paragraphs = body.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            for (var p = 0; p < paragraphs.items.length; p++) {
+              paragraphs.items[p].load(
+                'style,font/name,font/size,lineSpacing,lineSpacingRule,spaceAfter,spaceBefore,firstLineIndent,alignment'
+              );
+            }
+            const sections = context.document.sections;
+            sections.load('items');
+            await context.sync();
+
+            if (tplDetail.pageSetup && sections.items.length > 0) {
+              const sec = sections.items[0];
+              sec.load('pageSetup/topMargin,pageSetup/bottomMargin,pageSetup/leftMargin,pageSetup/rightMargin');
+              await context.sync();
+              const ps = tplDetail.pageSetup;
+              if (ps.topMargin && Math.abs(sec.pageSetup.topMargin - ps.topMargin) > 1) {
+                diffs.push({ aspect: '上边距', template: ps.topMargin + 'pt', current: sec.pageSetup.topMargin + 'pt', match: false });
+              }
+              if (ps.bottomMargin && Math.abs(sec.pageSetup.bottomMargin - ps.bottomMargin) > 1) {
+                diffs.push({ aspect: '下边距', template: ps.bottomMargin + 'pt', current: sec.pageSetup.bottomMargin + 'pt', match: false });
+              }
+              if (ps.leftMargin && Math.abs(sec.pageSetup.leftMargin - ps.leftMargin) > 1) {
+                diffs.push({ aspect: '左边距', template: ps.leftMargin + 'pt', current: sec.pageSetup.leftMargin + 'pt', match: false });
+              }
+              if (ps.rightMargin && Math.abs(sec.pageSetup.rightMargin - ps.rightMargin) > 1) {
+                diffs.push({ aspect: '右边距', template: ps.rightMargin + 'pt', current: sec.pageSetup.rightMargin + 'pt', match: false });
+              }
+            }
+
+            const bodyParas = paragraphs.items.filter(function (para) {
+              var s = String(para.style || '').toLowerCase();
+              return s.indexOf('heading') < 0 && s.indexOf('标题') < 0;
+            });
+            if (bodyParas.length > 0) {
+              const sampleFont = bodyParas[0].font.name;
+              const sampleSize = bodyParas[0].font.size;
+              if (tplDetail.metadata.mainBodyFont && sampleFont !== tplDetail.metadata.mainBodyFont) {
+                diffs.push({ aspect: '正文西文字体', template: tplDetail.metadata.mainBodyFont, current: sampleFont || '未知', match: false });
+              }
+              if (tplDetail.metadata.mainBodySize && sampleSize !== tplDetail.metadata.mainBodySize) {
+                diffs.push({ aspect: '正文字号', template: tplDetail.metadata.mainBodySize + 'pt', current: (sampleSize || '未知') + 'pt', match: false });
+              }
+              if (tplDetail.metadata.mainBodyLineSpacing) {
+                const sampleSpacing = bodyParas[0].lineSpacing;
+                if (Math.abs((sampleSpacing || 0) - tplDetail.metadata.mainBodyLineSpacing) > 0.05) {
+                  diffs.push({ aspect: '正文行距', template: String(tplDetail.metadata.mainBodyLineSpacing), current: String(sampleSpacing || '未知'), match: false });
+                }
+              }
+            }
+          });
+          return {
+            success: true,
+            templateName: tplName,
+            differences: diffs.length,
+            diffs: diffs,
+            summary: diffs.length === 0 ? '✅ 当前文档格式与模板完全匹配' : '⚠️ 发现 ' + diffs.length + ' 处格式差异',
+          };
+        }
+
+        if (op === 'delete') {
+          if (!tplName) return { success: false, error: '❌ 请指定模板名称' };
+          if (!templateStore[tplName]) return { success: false, error: '❌ 模板 "' + tplName + '" 不存在' };
+          delete templateStore[tplName];
+          await saveTemplatesToServer();
+          return { success: true, message: '✅ 模板 "' + tplName + '" 已删除' };
+        }
+
+        return { success: false, error: '❌ 未知 operation: ' + String(op || '') };
+      }
+
       /** 对齐：优先 Paragraph.alignment（1.1），失败再用 paragraphFormat */
       function applyAlignmentToItem(item, alignStr) {
         if (!alignStr) return false;
@@ -1348,6 +2808,50 @@
         let result;
         try {
           switch (action) {
+            case 'get_heading_outline':
+              result = await Word.run(async function (context) {
+                try {
+                  var body = context.document.body;
+                  var paragraphs = body.paragraphs;
+                  paragraphs.load('items');
+                  await context.sync();
+                  for (var hi = 0; hi < paragraphs.items.length; hi++) {
+                    paragraphs.items[hi].load('text,style');
+                  }
+                  await context.sync();
+                  var headings = [];
+                  for (var hj = 0; hj < paragraphs.items.length; hj++) {
+                    var hp = paragraphs.items[hj];
+                    var hstyle = String(hp.style || '').toLowerCase();
+                    var hlevel = 0;
+                    if (hstyle.indexOf('heading 1') >= 0 || hstyle.indexOf('标题 1') >= 0) hlevel = 1;
+                    else if (hstyle.indexOf('heading 2') >= 0 || hstyle.indexOf('标题 2') >= 0)
+                      hlevel = 2;
+                    else if (hstyle.indexOf('heading 3') >= 0 || hstyle.indexOf('标题 3') >= 0)
+                      hlevel = 3;
+                    else if (hstyle.indexOf('heading 4') >= 0 || hstyle.indexOf('标题 4') >= 0)
+                      hlevel = 4;
+                    if (hlevel > 0 && String(hp.text || '').trim()) {
+                      headings.push({
+                        level: hlevel,
+                        text: String(hp.text || '').substring(0, 80),
+                      });
+                    }
+                  }
+                  return {
+                    success: true,
+                    action: 'get_heading_outline',
+                    data: { headings: headings },
+                  };
+                } catch (err) {
+                  return {
+                    success: false,
+                    action: 'get_heading_outline',
+                    error: '读取标题大纲失败: ' + (err && err.message ? err.message : String(err)),
+                  };
+                }
+              });
+              break;
             case 'read_structure':
               result = await runReadStructure();
               break;
@@ -1689,6 +3193,41 @@
                   };
                 }
               });
+              break;
+            }
+            case 'audit_document': {
+              try {
+                var auditReport = await runAuditDocument(data);
+                result = {
+                  success: true,
+                  action: 'audit_document',
+                  data: auditReport,
+                };
+              } catch (err) {
+                result = {
+                  success: false,
+                  action: 'audit_document',
+                  error: '审视文档失败: ' + (err && err.message ? err.message : String(err)),
+                };
+              }
+              break;
+            }
+            case 'manage_template': {
+              try {
+                var manageResult = await runManageTemplate(data);
+                result = {
+                  success: !!manageResult.success,
+                  action: 'manage_template',
+                  data: manageResult,
+                  error: manageResult.success ? undefined : manageResult.error,
+                };
+              } catch (err) {
+                result = {
+                  success: false,
+                  action: 'manage_template',
+                  error: '管理模板失败: ' + (err && err.message ? err.message : String(err)),
+                };
+              }
               break;
             }
             case 'edit_paragraphs': {

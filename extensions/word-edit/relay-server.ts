@@ -4,7 +4,7 @@ import https from "https";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer, WebSocket } from "ws";
-import { WordEditParams, WordEditResult } from "./types";
+import { WordEditParams, WordEditResult } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,13 +28,31 @@ const pendingRequests = new Map<
 
 let wss: WebSocketServer | null = null;
 
+function shouldStartRelayInThisProcess(): boolean {
+  const argv = process.argv.slice(2).join(" ").toLowerCase();
+  // Relay is only required in the long-running gateway process.
+  // Skip one-shot CLI commands (e.g. plugins list / health) to avoid port races.
+  return argv.includes("gateway");
+}
+
 export function startRelayServer(): void {
+  if (!shouldStartRelayInThisProcess()) {
+    return;
+  }
+
   // 防重入：如果已经启动过，直接返回
   if (wss) {
     return;
   }
 
-  const certDir = path.join(__dirname, "..", "word-bridge");
+  const certCandidates = [
+    path.join(process.cwd(), "extensions", "word-bridge"),
+    path.join(__dirname, "..", "word-bridge"),
+    path.join(__dirname, "..", "..", "word-bridge"),
+  ];
+  const certDir =
+    certCandidates.find((dir) => fs.existsSync(path.join(dir, "127.0.0.1+1.pem"))) ||
+    certCandidates[0];
   const certPath = path.join(certDir, "127.0.0.1+1.pem");
   const keyPath = path.join(certDir, "127.0.0.1+1-key.pem");
   let httpsServer: https.Server;
@@ -49,9 +67,31 @@ export function startRelayServer(): void {
     throw e;
   }
 
-  httpsServer.on("error", function (err) {
+  httpsServer.on("error", function (err: NodeJS.ErrnoException) {
+    if (err?.code === "EADDRINUSE") {
+      // Another OpenClaw process may already own the relay port.
+      // Do not crash secondary CLI processes like `plugins list`.
+      console.warn(
+        `[Word Edit Relay] 端口 ${RELAY_PORT} 已被占用，当前进程跳过中继启动（通常是另一个网关实例已在运行）`,
+      );
+      wss = null;
+      return;
+    }
     console.error("[Word Edit Relay] HTTPS 监听错误:", err.message);
   });
+
+  try {
+    httpsServer.listen(RELAY_PORT);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === "EADDRINUSE") {
+      console.warn(
+        `[Word Edit Relay] 端口 ${RELAY_PORT} 已被占用，当前进程跳过中继启动（通常是另一个网关实例已在运行）`,
+      );
+      return;
+    }
+    throw err;
+  }
 
   wss = new WebSocketServer({ server: httpsServer });
 
@@ -93,8 +133,6 @@ export function startRelayServer(): void {
       });
     }
   });
-
-  httpsServer.listen(RELAY_PORT);
 
   console.log(`📡 Word Edit Relay: wss://127.0.0.1:${RELAY_PORT}`);
   console.log(`📝 Word Bridge 端点: wss://127.0.0.1:${RELAY_PORT}/bridge`);
