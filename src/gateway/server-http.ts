@@ -79,6 +79,7 @@ import {
 import type { PreauthConnectionBudget } from "./server/preauth-connection-budget.js";
 import type { ReadinessChecker } from "./server/readiness.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { handleAutodevHttpRequest } from "./autodev-http.js";
 import { handleSessionKillHttpRequest } from "./session-kill-http.js";
 import { handleSessionHistoryHttpRequest } from "./sessions-history-http.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
@@ -803,6 +804,14 @@ export function createGatewayHttpServer(opts: {
         ? resolvePluginRoutePathContext(requestPath)
         : null;
       const requestStages: GatewayHttpRequestStage[] = [
+        {
+          name: "autodev",
+          run: () =>
+            handleAutodevHttpRequest(req, res, requestPath, {
+              trustedProxies,
+              allowRealIpFallback,
+            }),
+        },
         {
           name: "hooks",
           run: () => handleHooksRequest(req, res),

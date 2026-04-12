@@ -39,6 +39,11 @@ export function findGitRoot(startDir: string, opts: { maxDepth?: number } = {}):
   return walkUpFrom(startDir, opts, (repoRoot) => (hasGitMarker(repoRoot) ? repoRoot : null));
 }
 
+/** Git root for autodev / CI helpers (alias of {@link findGitRoot}). */
+export function resolveGitRoot(startDir: string = process.cwd()): string | null {
+  return findGitRoot(startDir);
+}
+
 function resolveGitDirFromMarker(repoRoot: string): string | null {
   const gitPath = path.join(repoRoot, ".git");
   try {

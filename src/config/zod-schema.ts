@@ -230,6 +230,70 @@ const McpConfigSchema = z
   .strict()
   .optional();
 
+
+const AutodevAgentSchema = z
+  .object({
+    agentId: z.string(),
+    model: z.string(),
+    apiKey: z.string().register(sensitive),
+  })
+  .strict();
+
+const AutodevConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    bridgeUrl: z.string().optional(),
+    httpSecret: z.string().optional().register(sensitive),
+    ciFixMaxRetries: z.number().int().nonnegative().optional(),
+    github: z
+      .object({
+        appId: z.string(),
+        privateKeyPath: z.string(),
+        repoOwner: z.string(),
+        repoName: z.string(),
+        installationId: z.string(),
+        webhookSecret: z.string().register(sensitive),
+      })
+      .strict()
+      .optional(),
+    agents: z
+      .object({
+        facilitator: AutodevAgentSchema,
+        cko: AutodevAgentSchema,
+        pm: AutodevAgentSchema,
+        arch: AutodevAgentSchema,
+        coder: AutodevAgentSchema,
+        validator: AutodevAgentSchema,
+      })
+      .strict()
+      .optional(),
+    models: z
+      .object({
+        mode: z.string().optional(),
+        providers: z
+          .record(
+            z.string(),
+            z
+              .object({
+                baseUrl: z.string().optional(),
+                models: z.array(z.unknown()).optional(),
+              })
+              .strict(),
+          )
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    env: z
+      .object({
+        vars: z.record(z.string(), z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .optional();
+
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
@@ -960,6 +1024,7 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    autodev: AutodevConfigSchema,
   })
   .strict()
   .superRefine((cfg, ctx) => {
