@@ -153,12 +153,14 @@ export async function runTaskPipeline(taskInput: AutodevTaskInput): Promise<void
 
     await clearAutodevBaseline(workDir);
 
-    // Step 3 — commit + push (warm GitHub App token first)
+    // Step 3 — commit + push (warm GitHub App token first).
+    // commitAndPush: if `git status --porcelain` is empty, skips commit (success: no code changes needed)
+    // but still pushes the feature branch for PR; git commit uses FAST_COMMIT=1 for pre-commit hook.
     console.log("[autodev/pipeline] Step 3: commit and push");
     await getInstallationToken();
     const commitMessage = `feat(autodev): ${taskTitle} [notion-${taskId}]`;
     const commitHash = await commitAndPush(commitMessage);
-    console.log(`[autodev/pipeline] Pushed commit ${commitHash}`);
+    console.log(`[autodev/pipeline] Step 3: done, pushed HEAD ${commitHash}`);
 
     // Step 4 — PR + auto-merge
     console.log("[autodev/pipeline] Step 4: create PR + enable auto-merge");

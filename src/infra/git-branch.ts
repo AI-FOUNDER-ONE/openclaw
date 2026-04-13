@@ -128,8 +128,37 @@ async function resolveRepoRoot(): Promise<string> {
   return root;
 }
 
-function git(root: string, args: string[], timeoutMs = GIT_TIMEOUT_MS) {
-  return runCommandWithTimeout(["git", "-C", root, ...args], { timeoutMs });
+type GitCallOpts = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+
+function git(root: string, args: string[], timeoutMsOrOpts: number | GitCallOpts = GIT_TIMEOUT_MS) {
+  const opts: GitCallOpts =
+    typeof timeoutMsOrOpts === "number" ? { timeoutMs: timeoutMsOrOpts } : timeoutMsOrOpts;
+  return runCommandWithTimeout(["git", "-C", root, ...args], {
+    timeoutMs: opts.timeoutMs ?? GIT_TIMEOUT_MS,
+    env: opts.env,
+  });
+}
+
+const FAST_COMMIT_ENV = { FAST_COMMIT: "1" } as const;
+
+async function pushCurrentBranch(root: string): Promise<void> {
+  const token = await getInstallationToken();
+  const cfg = loadConfig();
+  const github = cfg.autodev?.github;
+  if (!github) {
+    throw new Error("autodev.github is not configured in openclaw.json");
+  }
+
+  const branchRes = await git(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  assertSuccess(branchRes, "git rev-parse --abbrev-ref HEAD");
+  const currentBranch = branchRes.stdout.trim();
+
+  const pushUrl = `https://x-access-token:${token}@github.com/${github.repoOwner}/${github.repoName}.git`;
+
+  const pushRes = await git(root, ["push", pushUrl, `HEAD:${currentBranch}`], {
+    timeoutMs: 60_000,
+  });
+  assertSuccess(pushRes, "git push");
 }
 
 async function resolveMainLikeRef(root: string): Promise<string | null> {
@@ -166,12 +195,11 @@ export async function createFeatureBranch(taskId: string, planVersion: number): 
   assertSuccess(create, `git checkout -b ${branchName}`);
 
   // Empty commit: stable baseline so getChangedFiles() can ignore pre-existing dirty trees vs main.
-  const emptyCommit = await git(root, [
-    "commit",
-    "--allow-empty",
-    "-m",
-    "chore(autodev): workspace baseline",
-  ]);
+  const emptyCommit = await git(
+    root,
+    ["commit", "--allow-empty", "-m", "chore(autodev): workspace baseline"],
+    { env: { ...FAST_COMMIT_ENV } },
+  );
   assertSuccess(emptyCommit, "git commit --allow-empty (autodev baseline)");
 
   const headRes = await git(root, ["rev-parse", "HEAD"]);
@@ -246,33 +274,31 @@ export async function getDiffContent(): Promise<string> {
 export async function commitAndPush(message: string): Promise<string> {
   const root = await resolveRepoRoot();
 
+  const statusRes = await git(root, ["status", "--porcelain"]);
+  assertSuccess(statusRes, "git status --porcelain");
+
+  if (!statusRes.stdout.trim()) {
+    console.log("[autodev/pipeline] Step 3: no changes to commit, skipping");
+    const hashRes = await git(root, ["rev-parse", "HEAD"]);
+    assertSuccess(hashRes, "git rev-parse HEAD");
+    const commitHash = hashRes.stdout.trim();
+    await pushCurrentBranch(root);
+    return commitHash;
+  }
+
   const addRes = await git(root, ["add", "-A"]);
   assertSuccess(addRes, "git add -A");
 
-  const commitRes = await git(root, ["commit", "-m", message]);
+  const commitRes = await git(root, ["commit", "-m", message], {
+    env: { ...FAST_COMMIT_ENV },
+  });
   assertSuccess(commitRes, "git commit");
 
-  // Extract commit hash from output
   const hashRes = await git(root, ["rev-parse", "HEAD"]);
   assertSuccess(hashRes, "git rev-parse HEAD");
   const commitHash = hashRes.stdout.trim();
 
-  // Build push URL with installation token for authentication
-  const token = await getInstallationToken();
-  const cfg = loadConfig();
-  const github = cfg.autodev?.github;
-  if (!github) {
-    throw new Error("autodev.github is not configured in openclaw.json");
-  }
-
-  const branchRes = await git(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  assertSuccess(branchRes, "git rev-parse --abbrev-ref HEAD");
-  const currentBranch = branchRes.stdout.trim();
-
-  const pushUrl = `https://x-access-token:${token}@github.com/${github.repoOwner}/${github.repoName}.git`;
-
-  const pushRes = await git(root, ["push", pushUrl, `HEAD:${currentBranch}`], 60_000);
-  assertSuccess(pushRes, "git push");
+  await pushCurrentBranch(root);
 
   return commitHash;
 }
