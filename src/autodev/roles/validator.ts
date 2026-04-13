@@ -1,6 +1,6 @@
 import { loadConfig } from "../../config/config.js";
-import { logDebug, logError } from "../../logger.js";
 import { getChangedFiles } from "../../infra/git-branch.js";
+import { logDebug, logError } from "../../logger.js";
 import { runValidation, formatValidationReport } from "../validation.js";
 import { extractJSON } from "./json-utils.js";
 import { callAgentLLM } from "./llm-helper.js";
@@ -15,7 +15,7 @@ const VALIDATOR_LLM_MAX_ATTEMPTS = 2;
 
 const VALIDATOR_JSON_STRICT =
   "你必须只输出 JSON，不要包含任何自然语言解释。第一个字符必须是 {。\n" +
-  "输出格式：{ \"passed\": boolean, \"fixInstructions\": string | null, \"analysis\": string }\n\n";
+  '输出格式：{ "passed": boolean, "fixInstructions": string | null, "analysis": string }\n\n';
 
 const FAILURE_ANALYSIS_PROMPT = `You are acting as Validator in an automated development pipeline.
 
@@ -57,9 +57,26 @@ function parseAnalysis(value: unknown): string {
 export async function execute(input: ValidatorInput): Promise<RoleResult<ValidatorOutput>> {
   const { workDir, expectedFiles } = input;
 
+  console.log("[autodev/validator] Starting validation in", workDir);
+
   try {
     logDebug(`[autodev/validator] Running validation in ${workDir}`);
     const result = await runValidation(workDir);
+
+    console.log("[autodev/validator] Validation result: allPassed=", result.allPassed);
+    console.log(
+      "[autodev/validator] Steps:",
+      result.results
+        .map((r) => `${r.step.name}: ${r.success ? "PASS" : "FAIL"} (${r.duration}ms)`)
+        .join(", "),
+    );
+    for (const r of result.results) {
+      if (!r.success) {
+        console.log(`[autodev/validator] FAILED step "${r.step.name}" output (first 20 lines):`);
+        console.log(r.output.split("\n").slice(0, 20).join("\n"));
+      }
+    }
+
     const report = formatValidationReport(result);
 
     if (result.allPassed) {
@@ -67,14 +84,14 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
       if (expectedFiles && expectedFiles.length > 0) {
         try {
           const actual = await getChangedFiles();
+          console.log("[autodev/validator] Changed files count:", actual.length);
           const unexpected = actual.filter((f) => !expectedFiles.includes(f));
           if (unexpected.length > 0) {
-            logDebug(
-              `[autodev/validator] Unexpected file changes: ${unexpected.join(", ")}`,
-            );
+            logDebug(`[autodev/validator] Unexpected file changes: ${unexpected.join(", ")}`);
             const scopeWarning =
               `\n\nScope warning: ${unexpected.length} unexpected file(s) changed: ` +
               unexpected.join(", ");
+            console.log("[autodev/validator] Final verdict: passed=", true);
             return {
               success: true,
               data: {
@@ -89,20 +106,32 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
       }
 
       logDebug("[autodev/validator] All validations passed");
+      console.log("[autodev/validator] Final verdict: passed=", true);
       return {
         success: true,
         data: { passed: true, validationReport: report },
       };
     }
 
-    // Validation failed — invoke LLM for failure analysis
+    // Validation failed — gather changed files for LLM / logs
     logDebug(
       `[autodev/validator] Validation failed (${result.failedSteps.join(", ")}), calling LLM for analysis`,
     );
 
+    let changedFilesList = "(unknown)";
+    try {
+      const files = await getChangedFiles();
+      console.log("[autodev/validator] Changed files count:", files.length);
+      changedFilesList = files.map((f) => `- ${f}`).join("\n");
+    } catch {
+      // non-fatal
+    }
+
     const cfg = loadConfig();
     const agents = cfg.autodev?.agents;
     if (!agents) {
+      console.log("[autodev/validator] LLM analysis skipped (no autodev.agents)");
+      console.log("[autodev/validator] Final verdict: passed=", false);
       return {
         success: true,
         data: {
@@ -111,14 +140,6 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
           fixInstructions: undefined,
         },
       };
-    }
-
-    let changedFilesList = "(unknown)";
-    try {
-      const files = await getChangedFiles();
-      changedFilesList = files.map((f) => `- ${f}`).join("\n");
-    } catch {
-      // non-fatal
     }
 
     const expectedFilesBlock =
@@ -134,8 +155,7 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
       const agentConfig = resolveAgentConfig(agents, "validator");
 
       for (let attempt = 1; attempt <= VALIDATOR_LLM_MAX_ATTEMPTS; attempt += 1) {
-        const prompt =
-          attempt === 1 ? basePrompt : `${basePrompt}${VALIDATOR_JSON_RETRY_SUFFIX}`;
+        const prompt = attempt === 1 ? basePrompt : `${basePrompt}${VALIDATOR_JSON_RETRY_SUFFIX}`;
         try {
           const raw = await callAgentLLM({
             agentConfig,
@@ -147,8 +167,18 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
           const parsed = extractJSON(raw, { logTag: "[autodev/validator]" });
           const fixInstructions = parseFixInstructions(parsed.fixInstructions);
           const analysis = parseAnalysis(parsed.analysis);
+          const llmResult = {
+            passed: parsed.passed,
+            fixInstructions: fixInstructions ?? null,
+            analysis,
+          };
+          console.log(
+            "[autodev/validator] LLM analysis result:",
+            JSON.stringify(llmResult).slice(0, 500),
+          );
           const reportSuffix = analysis ? `\n\n**LLM analysis:** ${analysis}` : "";
 
+          console.log("[autodev/validator] Final verdict: passed=", false);
           return {
             success: true,
             data: {
@@ -163,6 +193,7 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
         }
       }
       logError(`[autodev/validator] ${DEFAULT_PARSE_FAILURE_ANALYSIS}`);
+      console.log("[autodev/validator] Final verdict: passed=", false);
       return {
         success: true,
         data: {
@@ -174,6 +205,7 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
     } catch (llmErr) {
       const llmMessage = llmErr instanceof Error ? llmErr.message : String(llmErr);
       logError(`[autodev/validator] LLM analysis failed: ${llmMessage}`);
+      console.log("[autodev/validator] Final verdict: passed=", false);
       return {
         success: true,
         data: {
@@ -185,6 +217,7 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError(`[autodev/validator] ${message}`);
+    console.log("[autodev/validator] Final verdict: passed=", false, "(role error)");
     return { success: false, error: message };
   }
 }
