@@ -173,6 +173,8 @@ export default defineConfig([
       neverBundle: [
         "@lancedb/lancedb",
         "@matrix-org/matrix-sdk-crypto-nodejs",
+        "@octokit/rest",
+        "jsonwebtoken",
         "matrix-js-sdk",
         ...bundledPluginRuntimeDependencies,
       ],
