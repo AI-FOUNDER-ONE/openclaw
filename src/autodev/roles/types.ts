@@ -40,7 +40,7 @@ export type CoderInput = {
 
 export type CoderOutput = {
   success: boolean;
-  mode: "acp" | "cli" | "fallback";
+  mode: "acp" | "cli";
   cursorRounds: number;
   changedFiles: string[];
 };

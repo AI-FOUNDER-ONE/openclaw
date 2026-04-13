@@ -133,7 +133,7 @@ export async function runTaskPipeline(taskInput: AutodevTaskInput): Promise<void
     }
 
     const out = orch.data;
-    const cursorMode = out.coderResult?.mode ?? "fallback";
+    const cursorMode = out.coderResult?.mode ?? "unknown";
     const cursorRounds = out.coderResult?.cursorRounds ?? 0;
 
     // Collect files for PR body (post-orchestration, pre-commit)

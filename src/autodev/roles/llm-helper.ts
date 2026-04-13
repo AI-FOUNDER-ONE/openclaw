@@ -21,8 +21,9 @@ function resolveBaseUrlAndModel(modelRaw: string): { baseUrl: string; actualMode
       actualModel: model.slice("anthropic/".length),
     };
   }
+  // Unprefixed models: default to Moonshot OpenAI-compatible API (keys are Moonshot; OpenAI would 401).
   return {
-    baseUrl: "https://api.openai.com/v1",
+    baseUrl: "https://api.moonshot.cn/v1",
     actualModel: model,
   };
 }
@@ -45,7 +46,7 @@ function buildMessages(
 
 /**
  * Direct OpenAI-compatible `fetch` to the vendor implied by `autodev.agents[role].model`
- * prefix. Does not use embedded Pi agent or OpenClaw provider routing.
+ * prefix (moonshot/, deepseek/, anthropic/, or unprefixed → Moonshot). No embedded Pi agent.
  */
 export async function callAgentLLM(
   role: string,
@@ -67,7 +68,7 @@ export async function callAgentLLM(
 
   console.log(`[llm-helper] role=${role} model=${actualModel} baseUrl=${baseUrl}`);
 
-  const temperature = model.trim().startsWith("moonshot/") ? 1 : 0.7;
+  const temperature = baseUrl.includes("api.moonshot.cn") ? 1 : 0.7;
 
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",

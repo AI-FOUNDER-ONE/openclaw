@@ -21,24 +21,27 @@ export async function execute(input: CoderInput): Promise<RoleResult<CoderOutput
   const instruction = parts.join("\n\n");
 
   console.log(`[autodev/coder] Round ${roundLabel}/3: starting`);
-  console.log("[autodev/coder] Round 1: trying ACP...");
+  console.log(`[autodev/coder] Round ${roundLabel}: trying ACP...`);
   const acp = await runWithACP(workDir, instruction, { timeoutMs: ACP_TIMEOUT_MS });
   let mode: CoderOutput["mode"] = "acp";
-  let ok = acp.ok;
 
   console.log(
-    `[autodev/coder] Round 1: ACP result: success=${acp.ok}, mode=acp, output length=${acp.output.length}`,
+    `[autodev/coder] Round ${roundLabel}: ACP result: success=${acp.ok}, mode=acp, output length=${acp.output.length}`,
   );
 
   if (!acp.ok) {
     console.log(`[autodev/coder] ACP failed: ${acp.output}, falling back to CLI`);
     console.log("[autodev/coder] Starting CLI fallback...");
     const cli = await runCursorCLI(workDir, instruction);
-    ok = cli.ok;
-    mode = cli.ok ? "cli" : "fallback";
     console.log(
-      `[autodev/coder] Round 1: CLI result: success=${cli.ok}, output length=${cli.output.length}`,
+      `[autodev/coder] Round ${roundLabel}: CLI result: success=${cli.ok}, output length=${cli.output.length}`,
     );
+    if (!cli.ok) {
+      const errMsg = `Coder failed after ACP and CLI: ACP: ${acp.output.slice(0, 400)} | CLI: ${cli.output.slice(0, 400)}`;
+      console.error(`[autodev/coder] ${errMsg}`);
+      return { success: false, error: errMsg };
+    }
+    mode = "cli";
   }
 
   let changedFiles: string[] = [];
@@ -48,12 +51,14 @@ export async function execute(input: CoderInput): Promise<RoleResult<CoderOutput
     changedFiles = [];
   }
   const preview = changedFiles.slice(0, 40).join(",");
-  console.log(`[autodev/coder] Round 1: changedFiles=${changedFiles.length}, files=${preview}`);
+  console.log(
+    `[autodev/coder] Round ${roundLabel}: changedFiles=${changedFiles.length}, files=${preview}`,
+  );
 
   return {
     success: true,
     data: {
-      success: ok,
+      success: true,
       mode,
       cursorRounds: roundLabel,
       changedFiles,
