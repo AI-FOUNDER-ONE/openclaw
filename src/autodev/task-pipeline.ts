@@ -3,6 +3,7 @@ import {
   commitAndPush,
   createFeatureBranch,
   getChangedFiles,
+  restoreAutodevStashedWorkspace,
 } from "../infra/git-branch.js";
 import { resolveGitRoot } from "../infra/git-root.js";
 import { getInstallationToken } from "../infra/github-app-auth.js";
@@ -124,9 +125,11 @@ export async function runTaskPipeline(taskInput: AutodevTaskInput): Promise<void
       taskTitle,
     });
 
-    if (!orch.success || !orch.data || orch.data.state !== "done") {
-      const reason = orch.error ?? `Orchestration ended in state: ${orch.data?.state ?? "unknown"}`;
-      throw new Error(reason);
+    if (!orch.success) {
+      throw new Error(orch.error);
+    }
+    if (orch.data.state !== "done") {
+      throw new Error(`Orchestration ended in state: ${orch.data.state}`);
     }
 
     const out = orch.data;
@@ -210,5 +213,7 @@ export async function runTaskPipeline(taskInput: AutodevTaskInput): Promise<void
 
     await cleanupGitState(workDir, featureBranch);
     throw err;
+  } finally {
+    await restoreAutodevStashedWorkspace(workDir);
   }
 }

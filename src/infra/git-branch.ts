@@ -10,8 +10,105 @@ const GIT_TIMEOUT_MS = 30_000;
 /** Written under `.git/` so it is never committed; marks the autodev task baseline commit. */
 const AUTODEV_BASELINE_FILENAME = "openclaw-autodev-baseline";
 
+/** Set when `git stash push` ran at pipeline start; cleared after `stash pop` in `restoreAutodevStashedWorkspace`. */
+const AUTODEV_STASHED_MARKER_FILENAME = "openclaw-autodev-stashed";
+
+const GIT_STASH_RESTORE_TIMEOUT_MS = 60_000;
+
 function autodevBaselineMarkerPath(root: string): string {
   return path.join(root, ".git", AUTODEV_BASELINE_FILENAME);
+}
+
+function autodevStashedMarkerPath(root: string): string {
+  return path.join(root, ".git", AUTODEV_STASHED_MARKER_FILENAME);
+}
+
+/**
+ * If the worktree is dirty, stash tracked + untracked changes before switching to `main`.
+ * Non-fatal: logs and continues if stash fails.
+ */
+async function stashWorkspaceIfDirtyForAutodev(root: string): Promise<void> {
+  const porcelain = await git(root, ["status", "--porcelain"]);
+  if (porcelain.code !== 0) {
+    console.log(
+      `[autodev/pipeline] git status --porcelain failed (exit ${porcelain.code}); skip autodev stash`,
+    );
+    return;
+  }
+  if (!porcelain.stdout.trim()) {
+    return;
+  }
+
+  const stashResult = await git(root, [
+    "stash",
+    "push",
+    "--include-untracked",
+    "-m",
+    "autodev-pipeline-stash",
+  ]);
+  if (stashResult.code !== 0) {
+    console.log(
+      `[autodev/pipeline] git stash push failed (exit ${stashResult.code}); continuing without stash: ${stashResult.stderr.trim().slice(0, 300)}`,
+    );
+    return;
+  }
+
+  try {
+    await fs.writeFile(autodevStashedMarkerPath(root), "true\n", "utf8");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.log(`[autodev/pipeline] Could not write autodev stash marker: ${msg}`);
+    return;
+  }
+  console.log("[autodev/pipeline] Stashed dirty workspace");
+}
+
+/**
+ * After pipeline ends (success or failure): checkout `main` and pop the autodev stash if we created one.
+ * Stash pop conflicts are warned only. The marker is removed after a successful `checkout main` and `stash pop`
+ * attempt; if checkout fails first, the marker is kept for manual recovery.
+ */
+export async function restoreAutodevStashedWorkspace(repoRoot: string): Promise<void> {
+  try {
+    const markerPath = autodevStashedMarkerPath(repoRoot);
+    try {
+      await fs.access(markerPath);
+    } catch {
+      return;
+    }
+
+    const checkout = await runCommandWithTimeout(["git", "-C", repoRoot, "checkout", "main"], {
+      timeoutMs: GIT_STASH_RESTORE_TIMEOUT_MS,
+    });
+    if (checkout.code !== 0) {
+      console.warn(
+        `[autodev/pipeline] Could not checkout main before stash pop (exit ${checkout.code}); keeping ${AUTODEV_STASHED_MARKER_FILENAME} — fix checkout then run git stash pop or git stash drop`,
+      );
+      return;
+    }
+
+    const pop = await runCommandWithTimeout(["git", "-C", repoRoot, "stash", "pop"], {
+      timeoutMs: GIT_STASH_RESTORE_TIMEOUT_MS,
+    });
+
+    await fs.unlink(markerPath).catch(() => undefined);
+
+    if (pop.code !== 0) {
+      console.warn(
+        `[autodev/pipeline] Stash pop failed (exit ${pop.code}). Fix conflicts or run: git stash list, git stash pop, or git stash drop.`,
+      );
+      const errText = pop.stderr.trim();
+      if (errText) {
+        console.warn(errText.slice(0, 800));
+      }
+      return;
+    }
+
+    console.log("[autodev/pipeline] Restored stashed changes");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[autodev/pipeline] restoreAutodevStashedWorkspace failed (non-fatal): ${msg}`);
+  }
 }
 
 /** Remove autodev baseline marker (e.g. after task completes or cleanup). */
@@ -54,6 +151,8 @@ function assertSuccess(result: { code: number | null; stderr: string }, context:
 export async function createFeatureBranch(taskId: string, planVersion: number): Promise<string> {
   const root = await resolveRepoRoot();
   const branchName = `feature/notion-${taskId}-v${planVersion}`;
+
+  await stashWorkspaceIfDirtyForAutodev(root);
 
   await clearAutodevBaseline(root);
 

@@ -2,15 +2,20 @@ import { loadConfig } from "../../config/config.js";
 import { logDebug, logError } from "../../logger.js";
 import { extractJSON } from "./json-utils.js";
 import { callAgentLLM } from "./llm-helper.js";
-import {
-  resolveAgentConfig,
-  type PMInput,
-  type PlanOutput,
-  type PlanTask,
-  type RoleResult,
-} from "./types.js";
+import { type PMInput, type PlanOutput, type PlanTask, type RoleResult } from "./types.js";
 
 const PM_MAX_RETRIES = 2;
+
+/** Safe string coercion for JSON-derived values (avoids String(object) => "[object Object]"). */
+function coerceText(value: unknown, fallback: string): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return fallback;
+}
 
 const JSON_SYSTEM_PREFIX =
   "你是一个严格的 JSON 生成器。你的全部输出必须是且仅是一个合法 JSON 对象，不要包含任何自然语言、解释、markdown 代码块标记或其他非 JSON 内容。\n\n";
@@ -56,7 +61,7 @@ const JSON_RETRY_SUFFIX =
   "\n\n上一次输出不是合法 JSON 或结构不完整，请只输出符合上述 schema 的 JSON，第一个字符必须是 {，最后一个字符必须是 }。";
 
 function riskNorm(r: unknown): PlanOutput["riskLevel"] {
-  const s = String(r ?? "medium").toLowerCase();
+  const s = coerceText(r, "medium").toLowerCase();
   if (s === "low" || s === "medium" || s === "high") {
     return s;
   }
@@ -70,22 +75,21 @@ function normalizeToPlanOutput(parsed: Record<string, unknown>, input: PMInput):
     let tasks: PlanTask[] = tasksRaw.map((t, idx) => {
       const row = t as Record<string, unknown>;
       const verify = row.verifyCommand ?? row.validationCommand;
+      const verifyStr = coerceText(verify, "");
       return {
-        title: String(row.title ?? `Step ${idx + 1}`),
-        cursorInstruction: String(row.cursorInstruction ?? ""),
-        ...(verify != null && String(verify).trim() !== ""
-          ? { validationCommand: String(verify) }
-          : {}),
+        title: coerceText(row.title, `Step ${idx + 1}`),
+        cursorInstruction: coerceText(row.cursorInstruction, ""),
+        ...(verifyStr.trim() !== "" ? { validationCommand: verifyStr } : {}),
       };
     });
     tasks = tasks.filter((t) => t.cursorInstruction.trim().length > 0);
     if (tasks.length === 0 && Array.isArray(parsed.cursorInstructions)) {
       tasks = (parsed.cursorInstructions as unknown[]).map((c, i) => ({
         title: `Step ${i + 1}`,
-        cursorInstruction: String(c),
+        cursorInstruction: coerceText(c, ""),
       }));
     }
-    const goal = String(p.objective ?? input.taskTitle).trim();
+    const goal = coerceText(p.objective ?? input.taskTitle, input.taskTitle).trim();
     return {
       goal: goal || input.taskTitle,
       acceptanceCriteria: Array.isArray(p.acceptanceCriteria)
@@ -102,12 +106,11 @@ function normalizeToPlanOutput(parsed: Record<string, unknown>, input: PMInput):
       ? (parsed.tasks as unknown[]).map((t, idx) => {
           const row = t as Record<string, unknown>;
           const verify = row.validationCommand ?? row.verifyCommand;
+          const verifyStr = coerceText(verify, "");
           return {
-            title: String(row.title ?? `Step ${idx + 1}`),
-            cursorInstruction: String(row.cursorInstruction ?? ""),
-            ...(verify != null && String(verify).trim() !== ""
-              ? { validationCommand: String(verify) }
-              : {}),
+            title: coerceText(row.title, `Step ${idx + 1}`),
+            cursorInstruction: coerceText(row.cursorInstruction, ""),
+            ...(verifyStr.trim() !== "" ? { validationCommand: verifyStr } : {}),
           };
         })
       : [];
@@ -129,7 +132,7 @@ function normalizeToPlanOutput(parsed: Record<string, unknown>, input: PMInput):
       impactScope: [],
       tasks: (parsed.cursorInstructions as unknown[]).map((c, i) => ({
         title: `Step ${i + 1}`,
-        cursorInstruction: String(c),
+        cursorInstruction: coerceText(c, ""),
       })),
       riskLevel: riskNorm(parsed.riskLevel),
     };
@@ -183,18 +186,12 @@ export async function execute(input: PMInput): Promise<RoleResult<PlanOutput>> {
   let lastError: Error | null = null;
 
   try {
-    const agentConfig = resolveAgentConfig(agents, "pm");
     logDebug(`[autodev/pm] Generating plan for: ${input.taskTitle}`);
 
     for (let attempt = 1; attempt <= PM_MAX_RETRIES; attempt++) {
       try {
         const prompt = buildPrompt(input, attempt);
-        const rawOutput = await callAgentLLM({
-          agentConfig,
-          role: "pm",
-          prompt,
-          workDir: process.cwd(),
-        });
+        const rawOutput = await callAgentLLM("pm", "", prompt);
         console.log(`[autodev/pm] Attempt ${attempt} raw output length: ${rawOutput.length}`);
 
         const result = extractJSON(rawOutput, { logTag: "[autodev/pm]" });
@@ -207,8 +204,7 @@ export async function execute(input: PMInput): Promise<RoleResult<PlanOutput>> {
       } catch (err: unknown) {
         const e = err instanceof Error ? err : new Error(String(err));
         lastError = e;
-        const preview =
-          e.message.length > 200 ? `${e.message.slice(0, 200)}…` : e.message;
+        const preview = e.message.length > 200 ? `${e.message.slice(0, 200)}…` : e.message;
         console.error(`[autodev/pm] Attempt ${attempt}/${PM_MAX_RETRIES} failed:`, preview);
         if (attempt < PM_MAX_RETRIES) {
           console.log("[autodev/pm] 追加 JSON 强制提示后重试...");

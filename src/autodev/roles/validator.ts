@@ -4,12 +4,7 @@ import { logDebug, logError } from "../../logger.js";
 import { runValidation, formatValidationReport } from "../validation.js";
 import { extractJSON } from "./json-utils.js";
 import { callAgentLLM } from "./llm-helper.js";
-import {
-  resolveAgentConfig,
-  type ValidatorInput,
-  type ValidatorOutput,
-  type RoleResult,
-} from "./types.js";
+import { type ValidatorInput, type ValidatorOutput, type RoleResult } from "./types.js";
 
 const VALIDATOR_LLM_MAX_ATTEMPTS = 2;
 
@@ -152,17 +147,10 @@ export async function execute(input: ValidatorInput): Promise<RoleResult<Validat
       .replace("{expectedFilesBlock}", expectedFilesBlock);
 
     try {
-      const agentConfig = resolveAgentConfig(agents, "validator");
-
       for (let attempt = 1; attempt <= VALIDATOR_LLM_MAX_ATTEMPTS; attempt += 1) {
         const prompt = attempt === 1 ? basePrompt : `${basePrompt}${VALIDATOR_JSON_RETRY_SUFFIX}`;
         try {
-          const raw = await callAgentLLM({
-            agentConfig,
-            role: "validator",
-            prompt,
-            workDir,
-          });
+          const raw = await callAgentLLM("validator", "", prompt);
           logDebug(`[autodev/validator] Attempt ${attempt} raw output length: ${raw.length}`);
           const parsed = extractJSON(raw, { logTag: "[autodev/validator]" });
           const fixInstructions = parseFixInstructions(parsed.fixInstructions);

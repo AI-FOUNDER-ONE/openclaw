@@ -2,6 +2,7 @@ import type { AcpConfig } from "./types.acp.js";
 import type { AgentBinding, AgentsConfig } from "./types.agents.js";
 import type { ApprovalsConfig } from "./types.approvals.js";
 import type { AuthConfig } from "./types.auth.js";
+import type { AutodevConfig } from "./types.autodev.js";
 import type { DiagnosticsConfig, LoggingConfig, SessionConfig, WebConfig } from "./types.base.js";
 import type { BrowserConfig } from "./types.browser.js";
 import type { ChannelsConfig } from "./types.channels.js";
@@ -37,6 +38,8 @@ export type OpenClawConfig = {
     lastTouchedAt?: string;
   };
   auth?: AuthConfig;
+  /** Experimental: automated dev pipeline (PM / Coder / Validator, etc.). */
+  autodev?: AutodevConfig;
   acp?: AcpConfig;
   env?: {
     /** Opt-in: import missing secrets from a login shell environment (exec `$SHELL -l -c 'env -0'`). */
