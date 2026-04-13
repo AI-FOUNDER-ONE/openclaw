@@ -15,6 +15,22 @@ import { logDebug, logError } from "../logger.js";
 const DEFAULT_SESSION_TIMEOUT_MS = 90_000;
 const AGENT_COMMAND = "agent";
 
+/** Matches minimal ACP clients / docs when agents use this literal id. */
+const PERMISSION_ALLOW_ONCE_OPTION_ID = "allow-once";
+
+function buildAgentAcpArgv(): string[] {
+  const apiKey = process.env.CURSOR_API_KEY?.trim();
+  const authToken = process.env.CURSOR_AUTH_TOKEN?.trim();
+  const pre: string[] = [];
+  if (apiKey) {
+    pre.push("--api-key", apiKey);
+  }
+  if (authToken) {
+    pre.push("--auth-token", authToken);
+  }
+  return [...pre, "acp"];
+}
+
 export type ACPClientOptions = {
   workDir: string;
   /** Override the agent binary path. */
@@ -113,9 +129,20 @@ export class ACPClient {
     this.sessionEndsAt = Date.now() + this.sessionTimeoutMs;
 
     const command = this.agentPath ?? AGENT_COMMAND;
-    const args = ["acp"];
+    const args = buildAgentAcpArgv();
+    const hasHeadlessAuth =
+      Boolean(process.env.CURSOR_API_KEY?.trim()) || Boolean(process.env.CURSOR_AUTH_TOKEN?.trim());
+    if (!hasHeadlessAuth) {
+      logDebug(
+        "ACP: no CURSOR_API_KEY / CURSOR_AUTH_TOKEN; authenticate() uses cursor_login (requires `agent login` or keys in env)",
+      );
+    } else {
+      logDebug("ACP: spawning agent with --api-key and/or --auth-token from environment");
+    }
 
-    logDebug(`Spawning ACP agent: ${command} ${args.join(" ")} (cwd: ${this.workDir})`);
+    logDebug(
+      `Spawning ACP agent: ${command} (${args.length} argv, ends with acp; cwd: ${this.workDir})`,
+    );
 
     this.child = spawn(command, args, {
       cwd: this.workDir,
@@ -148,18 +175,25 @@ export class ACPClient {
     const collected = this.collected;
     this.conn = new ClientSideConnection((_agent) => {
       const client: Client = {
+        /**
+         * `session/request_permission` — the SDK routes JSON-RPC here; if we do not answer,
+         * tool execution can block indefinitely (ACP spec).
+         */
         async requestPermission(
           params: RequestPermissionRequest,
         ): Promise<RequestPermissionResponse> {
-          // Auto-approve in headless mode: pick the first allow option
           const options = params.options ?? [];
-          const allow =
-            options.find((o) => o.kind === "allow_once") ??
-            options.find((o) => o.kind === "allow_always") ??
-            options[0];
+          const byKindOnce = options.find((o) => o.kind === "allow_once");
+          const byDocOptionId = options.find((o) => o.optionId === PERMISSION_ALLOW_ONCE_OPTION_ID);
+          const byKindAlways = options.find((o) => o.kind === "allow_always");
+          const allow = byKindOnce ?? byDocOptionId ?? byKindAlways ?? options[0];
           if (!allow) {
+            logDebug("ACP requestPermission: no options; responding cancelled");
             return { outcome: { outcome: "cancelled" } };
           }
+          logDebug(
+            `ACP requestPermission: auto-select optionId=${allow.optionId} kind=${allow.kind} sessionId=${params.sessionId}`,
+          );
           return { outcome: { outcome: "selected", optionId: allow.optionId } };
         },
         async sessionUpdate(params: SessionNotification): Promise<void> {
