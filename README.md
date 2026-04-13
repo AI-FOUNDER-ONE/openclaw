@@ -129,6 +129,31 @@ openclaw agent --message "Ship checklist" --thinking high
 
 Upgrading? [Updating guide](https://docs.openclaw.ai/install/updating) (and run `openclaw doctor`).
 
+## Gateway HTTP health probes
+
+The Gateway HTTP server exposes **unauthenticated** JSON endpoints for orchestration and load balancers. Responses use `Content-Type: application/json; charset=utf-8`.
+
+| Endpoint | Role | HTTP | Body (success) |
+| --- | --- | --- | --- |
+| `GET /healthz` or `GET /health` | **Liveness** — process is up | **200** | `{"status":"ok"}` |
+| `GET /ready`, `GET /readyz`, or `GET /healthz?ready=true` | **Readiness** — managed channels healthy | **200** or **503** | `{"status":"ready"}` or `{"status":"not_ready"}` (optional `checks` array) |
+
+- **200 (readiness):** all readiness checks passed (or no checker is configured).
+- **503 (readiness):** at least one dependency is unhealthy. From **localhost** or with a valid gateway **Bearer** token, the JSON may include a `checks` array with safe fields (`name`, `id`, `ok`, optional `reason`); unauthenticated remote callers get a minimal payload without per-check details.
+
+`HEAD` requests are supported with the same status code and no body.
+
+**Typical uses:** Kubernetes `livenessProbe` on `/healthz`, `readinessProbe` on `/ready` or `/readyz`, or load balancer health checks.
+
+**Local check** (default gateway port):
+
+```bash
+curl -fsS http://127.0.0.1:18789/healthz
+curl -fsS http://127.0.0.1:18789/ready
+```
+
+More detail: [Health checks](https://docs.openclaw.ai/gateway/health) in the docs.
+
 ## Development channels
 
 - **stable**: tagged releases (`vYYYY.M.D` or `vYYYY.M.D-<patch>`), npm dist-tag `latest`.

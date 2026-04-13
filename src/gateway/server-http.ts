@@ -13,7 +13,9 @@ import { CANVAS_WS_PATH, handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import { listBundledChannelPlugins } from "../channels/plugins/bundled.js";
 import { loadConfig } from "../config/config.js";
-import type { createSubsystemLogger } from "../logging/subsystem.js";
+import { HealthHandler } from "../handlers/health.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveGatewayProbeMode } from "../routes/health.js";
 import { resolveHookExternalContentSource as resolveHookExternalContentSourceFromSession } from "../security/external-content.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
@@ -86,6 +88,9 @@ import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
+const probeLog = createSubsystemLogger("gateway/probe");
+const gatewayHealthHandler = new HealthHandler();
+
 const HOOK_AUTH_FAILURE_LIMIT = 20;
 const HOOK_AUTH_FAILURE_WINDOW_MS = 60_000;
 
@@ -129,12 +134,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-const GATEWAY_PROBE_STATUS_BY_PATH = new Map<string, "live" | "ready">([
-  ["/health", "live"],
-  ["/healthz", "live"],
-  ["/ready", "ready"],
-  ["/readyz", "ready"],
-]);
 function resolvePluginGatewayAuthBypassPaths(
   configSnapshot: ReturnType<typeof loadConfig>,
 ): Set<string> {
@@ -192,8 +191,12 @@ async function handleGatewayProbeRequest(
   allowRealIpFallback: boolean,
   getReadiness?: ReadinessChecker,
 ): Promise<boolean> {
-  const status = GATEWAY_PROBE_STATUS_BY_PATH.get(requestPath);
-  if (!status) {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  let probeKind = resolveGatewayProbeMode(requestPath);
+  if (probeKind === "live" && url.searchParams.get("ready") === "true") {
+    probeKind = "ready";
+  }
+  if (!probeKind) {
     return false;
   }
 
@@ -211,27 +214,27 @@ async function handleGatewayProbeRequest(
 
   let statusCode: number;
   let body: string;
-  if (status === "ready" && getReadiness) {
+  if (probeKind === "ready") {
     const includeDetails = await canRevealReadinessDetails({
       req,
       resolvedAuth,
       trustedProxies,
       allowRealIpFallback,
     });
-    try {
-      const result = getReadiness();
-      statusCode = result.ready ? 200 : 503;
-      body = JSON.stringify(includeDetails ? result : { ready: result.ready });
-    } catch {
-      statusCode = 503;
-      body = JSON.stringify(
-        includeDetails ? { ready: false, failing: ["internal"], uptimeMs: 0 } : { ready: false },
-      );
-    }
+    const ready = gatewayHealthHandler.getReady({ getReadiness, includeDetails });
+    statusCode = ready.statusCode;
+    body = JSON.stringify(ready.body);
   } else {
     statusCode = 200;
-    body = JSON.stringify({ ok: true, status });
+    body = JSON.stringify(gatewayHealthHandler.getHealth());
   }
+
+  probeLog.debug("http probe", {
+    path: requestPath,
+    kind: probeKind,
+    statusCode,
+  });
+
   res.statusCode = statusCode;
   res.end(method === "HEAD" ? undefined : body);
   return true;

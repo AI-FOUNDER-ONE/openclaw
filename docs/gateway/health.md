@@ -10,7 +10,28 @@ title: "Health Checks"
 
 Short guide to verify channel connectivity without guessing.
 
-## Quick checks
+## Gateway HTTP probes
+
+The Gateway HTTP listener exposes JSON endpoints for **liveness** and **readiness**. They **do not require gateway authentication**; use them with Kubernetes probes, load balancers, or simple uptime checks. Responses use `Content-Type: application/json; charset=utf-8`.
+
+### Liveness
+
+- **Paths:** `GET /healthz`, `GET /health` (and `HEAD` with the same status, no body).
+- **Status:** **200** while the process is running.
+- **Body:** `{"status":"ok"}`.
+
+Liveness does **not** evaluate channel or database state. It only confirms the HTTP server is accepting requests.
+
+### Readiness
+
+- **Paths:** `GET /ready`, `GET /readyz`, or `GET /healthz?ready=true` (and `HEAD` with the same status, no body).
+- **Status:** **200** when readiness checks pass (or when no readiness checker is registered), **503** when a check fails.
+- **Body (success):** `{"status":"ready"}`.
+- **Body (failure):** `{"status":"not_ready"}`. From **localhost** or with a valid gateway **Bearer** token, failures may include `checks`: an array of objects with `name`, optional `id`, `ok`, and optional `reason` (safe for operators; never connection strings or secrets).
+
+Readiness today reflects **managed messaging channel** health when a checker is wired into the gateway. If nothing registers a checker, the endpoint reports ready.
+
+## CLI quick checks
 
 - `openclaw status` — local summary: gateway reachability/mode, update hint, linked channel auth age, sessions + recent activity.
 - `openclaw status --all` — full local diagnosis (read-only, color, safe to paste for debugging).

@@ -27,7 +27,7 @@ describe("gateway probe endpoints", () => {
         await dispatchRequest(server, req, res);
 
         expect(res.statusCode).toBe(200);
-        expect(JSON.parse(getBody())).toEqual({ ready: true, failing: [], uptimeMs: 45_000 });
+        expect(JSON.parse(getBody())).toEqual({ status: "ready" });
       },
     });
   });
@@ -53,7 +53,7 @@ describe("gateway probe endpoints", () => {
         await dispatchRequest(server, req, res);
 
         expect(res.statusCode).toBe(503);
-        expect(JSON.parse(getBody())).toEqual({ ready: false });
+        expect(JSON.parse(getBody())).toEqual({ status: "not_ready" });
       },
     });
   });
@@ -81,9 +81,11 @@ describe("gateway probe endpoints", () => {
 
         expect(res.statusCode).toBe(503);
         expect(JSON.parse(getBody())).toEqual({
-          ready: false,
-          failing: ["discord", "telegram"],
-          uptimeMs: 8_000,
+          status: "not_ready",
+          checks: [
+            { name: "managed_channel", id: "discord", ok: false },
+            { name: "managed_channel", id: "telegram", ok: false },
+          ],
         });
       },
     });
@@ -104,7 +106,10 @@ describe("gateway probe endpoints", () => {
         await dispatchRequest(server, req, res);
 
         expect(res.statusCode).toBe(503);
-        expect(JSON.parse(getBody())).toEqual({ ready: false, failing: ["internal"], uptimeMs: 0 });
+        expect(JSON.parse(getBody())).toEqual({
+          status: "not_ready",
+          checks: [{ name: "readiness", ok: false, reason: "internal" }],
+        });
       },
     });
   });
@@ -126,7 +131,7 @@ describe("gateway probe endpoints", () => {
         await dispatchRequest(server, req, res);
 
         expect(res.statusCode).toBe(200);
-        expect(getBody()).toBe(JSON.stringify({ ok: true, status: "live" }));
+        expect(getBody()).toBe(JSON.stringify({ status: "ok" }));
       },
     });
   });
@@ -152,4 +157,74 @@ describe("gateway probe endpoints", () => {
       },
     });
   });
+
+  it("treats GET /healthz?ready=true as readiness when checker is configured", async () => {
+    const getReadiness: ReadinessChecker = () => ({
+      ready: false,
+      failing: ["discord"],
+      uptimeMs: 1,
+    });
+
+    await withGatewayServer({
+      prefix: "probe-healthz-ready-query",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getReadiness },
+      run: async (server) => {
+        const req = createRequest({ path: "/healthz?ready=true" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(getBody())).toEqual({
+          status: "not_ready",
+          checks: [{ name: "managed_channel", id: "discord", ok: false }],
+        });
+      },
+    });
+  });
+
+  it("sets JSON content-type on GET /healthz", async () => {
+    await withGatewayServer({
+      prefix: "probe-healthz-content-type",
+      resolvedAuth: AUTH_NONE,
+      run: async (server) => {
+        const req = createRequest({ path: "/healthz" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(200);
+        expect(setHeaderMock(res, "Content-Type")).toBe("application/json; charset=utf-8");
+        expect(JSON.parse(getBody())).toEqual({ status: "ok" });
+      },
+    });
+  });
+
+  it("sets JSON content-type on GET /ready", async () => {
+    const getReadiness: ReadinessChecker = () => ({
+      ready: true,
+      failing: [],
+      uptimeMs: 1,
+    });
+
+    await withGatewayServer({
+      prefix: "probe-ready-content-type",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getReadiness },
+      run: async (server) => {
+        const req = createRequest({ path: "/ready" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(200);
+        expect(setHeaderMock(res, "Content-Type")).toBe("application/json; charset=utf-8");
+        expect(JSON.parse(getBody())).toEqual({ status: "ready" });
+      },
+    });
+  });
 });
+
+function setHeaderMock(res: import("node:http").ServerResponse, name: string): string | undefined {
+  const mock = res.setHeader as unknown as { mock?: { calls: unknown[][] } };
+  const call = mock.mock?.calls.find((c) => c[0] === name);
+  return call?.[1] as string | undefined;
+}
