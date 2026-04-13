@@ -139,6 +139,7 @@ function git(root: string, args: string[], timeoutMsOrOpts: number | GitCallOpts
   });
 }
 
+/** Merged onto `process.env` by `runCommandWithTimeout` → `resolveCommandEnv` (not a full env replace). */
 const FAST_COMMIT_ENV = { FAST_COMMIT: "1" } as const;
 
 async function pushCurrentBranch(root: string): Promise<void> {
