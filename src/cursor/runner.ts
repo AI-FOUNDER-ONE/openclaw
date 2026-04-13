@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { ACPClient } from "./acp-client.js";
 
-const DEFAULT_ACP_PROMPT_MS = 60_000;
+/** Wall-clock budget for one ACP session (connect → prompt); child is killed when exceeded. */
+export const ACP_SESSION_TIMEOUT_MS = 90_000;
+
+/** Wall-clock budget for `agent -p -` CLI fallback. */
+export const CLI_TIMEOUT_MS = 180_000;
 
 export type RunCursorOutcome = {
   ok: boolean;
@@ -18,7 +22,7 @@ export async function runWithACP(
 ): Promise<RunCursorOutcome> {
   const client = new ACPClient({
     workDir,
-    timeoutMs: opts?.timeoutMs ?? DEFAULT_ACP_PROMPT_MS,
+    sessionTimeoutMs: opts?.timeoutMs ?? ACP_SESSION_TIMEOUT_MS,
   });
   try {
     await client.connect();
@@ -48,15 +52,46 @@ function resolveAgentBinary(): string {
 export async function runCursorCLI(
   workDir: string,
   instruction: string,
+  opts?: { timeoutMs?: number },
 ): Promise<RunCursorOutcome> {
   const bin = resolveAgentBinary();
+  const timeoutMs = opts?.timeoutMs ?? CLI_TIMEOUT_MS;
   return new Promise((resolve) => {
+    let settled = false;
+    let sigkillTimer: NodeJS.Timeout | null = null;
+
+    const finish = (outcome: RunCursorOutcome) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(wallTimer);
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+      resolve(outcome);
+    };
+
     const child = spawn(bin, ["-p", "-"], {
       cwd: workDir,
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
       windowsHide: true,
     });
+
+    const wallTimer = setTimeout(() => {
+      console.warn(`[autodev/coder] CLI timeout after ${timeoutMs}ms, killing subprocess`);
+      child.kill("SIGTERM");
+      sigkillTimer = setTimeout(() => {
+        sigkillTimer = null;
+        if (!child.killed) {
+          child.kill("SIGKILL");
+        }
+        finish({ ok: false, output: `CLI timed out after ${timeoutMs}ms` });
+      }, 5_000);
+    }, timeoutMs);
+
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (d) => {
@@ -66,11 +101,11 @@ export async function runCursorCLI(
       stderr += d.toString();
     });
     child.on("error", (err) => {
-      resolve({ ok: false, output: err.message });
+      finish({ ok: false, output: err.message });
     });
     child.on("close", (code) => {
       const out = stdout.trim() || stderr.trim() || `(exit ${code ?? "unknown"})`;
-      resolve({ ok: code === 0, output: out });
+      finish({ ok: code === 0, output: out });
     });
     child.stdin?.write(instruction);
     child.stdin?.end();
